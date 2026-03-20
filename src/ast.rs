@@ -15,6 +15,8 @@ pub enum Expr {
     App(Box<Expr>, Box<Expr>),
     LetIn(Vec<(String, Expr)>, Box<Expr>),
     BinOp(Box<Expr>, Op, Box<Expr>),
+    ImplicitAccess(Vec<String>),
+    With(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

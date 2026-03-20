@@ -43,7 +43,11 @@ fn main() {
         std::process::exit(1);
     });
 
-    let expr = match parser().parse(&source).into_result() {
+    let expr = match parser()
+        .then_ignore(chumsky::prelude::end())
+        .parse(&source)
+        .into_result()
+    {
         Ok(ast) => ast,
         Err(errs) => {
             for err in errs {
@@ -55,8 +59,55 @@ fn main() {
 
     let env = Env::new();
     let thunk = Thunk::new(expr, env);
-    match evaluate(thunk).and_then(deep_force) {
-        Ok(val) => println!("{:#?}", val),
+    let mut result_val = evaluate(thunk).unwrap_or_else(|e| {
+        eprintln!("Runtime error: {}", e);
+        std::process::exit(1);
+    });
+
+    if let Value::Closure {
+        args,
+        body,
+        env: closure_env,
+    } = result_val
+    {
+        let mut map = std::collections::HashMap::new();
+        let import_func = Value::NativeClosure(std::rc::Rc::new(|arg| match arg {
+            Value::String(s) if s == "fmt" => {
+                let mut fmt_map = std::collections::HashMap::new();
+                let println_func =
+                    Value::NativeClosure(std::rc::Rc::new(|print_arg| match print_arg {
+                        Value::String(ps) => {
+                            println!("{}", ps);
+                            Ok(Value::Int(0))
+                        }
+                        _ => Err("println expects a string".into()),
+                    }));
+                fmt_map.insert("println".to_string(), Thunk::evaluated(println_func));
+                Ok(Value::AttrSet(fmt_map))
+            }
+            _ => Err("import expects 'fmt'".into()),
+        }));
+        map.insert("import".to_string(), Thunk::evaluated(import_func));
+        let builtin_val = Value::AttrSet(map);
+
+        let call_env = closure_env.extend();
+        if let crate::ast::Args::Destructure { names, .. } = args {
+            for name in names {
+                if name == "builtin" {
+                    call_env.define(name, Thunk::evaluated(builtin_val.clone()));
+                }
+            }
+        }
+        result_val = crate::eval::eval_expr(&body, &call_env).unwrap_or_else(|e| {
+            eprintln!("Runtime error: {}", e);
+            std::process::exit(1);
+        });
+    }
+
+    match deep_force(result_val) {
+        Ok(val) => {
+            // Int(0) indicates a successful procedural/effectful script termination from fmt.println usually
+        }
         Err(e) => eprintln!("Runtime error: {}", e),
     }
 }
@@ -83,20 +134,29 @@ mod tests {
 
     #[test]
     fn test_string_interpolation() {
-        assert_eq!(eval_code("let name = \"Eris\"; in \"Hello, ${name}!\""), "\"Hello, Eris!\"");
+        assert_eq!(
+            eval_code("let name = \"Eris\"; in \"Hello, ${name}!\""),
+            "\"Hello, Eris!\""
+        );
     }
 
     #[test]
     fn test_attr_set() {
         assert_eq!(eval_code("let obj = { a = 1; b = 2; }; in obj.a"), "1");
-        assert_eq!(eval_code("let obj = { inner = { a = 42; }; }; in obj.inner.a"), "42");
+        assert_eq!(
+            eval_code("let obj = { inner = { a = 42; }; }; in obj.inner.a"),
+            "42"
+        );
     }
 
     #[test]
     fn test_rec_attr_set() {
         assert_eq!(eval_code("let r = rec { a = b; b = 99; }; in r.a"), "99");
         // Deeper nested recursion referencing variables in scope
-        assert_eq!(eval_code("let x = 5; r = rec { a = b + x; b = 10; }; in r.a"), "15");
+        assert_eq!(
+            eval_code("let x = 5; r = rec { a = b + x; b = 10; }; in r.a"),
+            "15"
+        );
     }
 
     #[test]
@@ -104,13 +164,22 @@ mod tests {
         assert_eq!(eval_code("let add = |a, b| -> a + b; in add 10 20"), "30");
         assert_eq!(eval_code("let succ = |n| -> n + 1; in succ 5"), "6");
         // Test partial application
-        assert_eq!(eval_code("let add = |a, b| -> a + b; add5 = add 5; in add5 10"), "15");
+        assert_eq!(
+            eval_code("let add = |a, b| -> a + b; add5 = add 5; in add5 10"),
+            "15"
+        );
     }
 
     #[test]
     fn test_destructuring_lambda() {
-        assert_eq!(eval_code("let f = {x; y} -> x + y; in f { x = 10; y = 20; }"), "30");
-        assert_eq!(eval_code("let f = {x; ...} -> x; in f { x = 10; y = 20; z = 30; }"), "10");
+        assert_eq!(
+            eval_code("let f = {x; y} -> x + y; in f { x = 10; y = 20; }"),
+            "30"
+        );
+        assert_eq!(
+            eval_code("let f = {x; ...} -> x; in f { x = 10; y = 20; z = 30; }"),
+            "10"
+        );
     }
 
     #[test]
@@ -119,7 +188,7 @@ mod tests {
         assert_eq!(eval_code("let a = 1; in [ a 2 3 ]"), "[ 1 2 3 ]");
         assert_eq!(eval_code("[ \"foo\" \"bar\" ]"), "[ \"foo\" \"bar\" ]");
     }
-    
+
     #[test]
     fn test_path() {
         assert_eq!(eval_code("p'./my/file.txt'"), "p'\"./my/file.txt\"'");

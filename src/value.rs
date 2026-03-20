@@ -14,6 +14,7 @@ pub enum Value {
     List(Vec<Thunk>),
     AttrSet(HashMap<String, Thunk>),
     Closure { args: Args, body: Expr, env: Env },
+    NativeClosure(Rc<dyn Fn(Value) -> Result<Value, String>>),
 }
 
 impl fmt::Debug for Value {
@@ -38,6 +39,7 @@ impl fmt::Debug for Value {
                 write!(f, "}}")
             }
             Value::Closure { .. } => write!(f, "<closure>"),
+            Value::NativeClosure(_) => write!(f, "<builtin>"),
         }
     }
 }
@@ -74,6 +76,7 @@ impl Thunk {
 #[derive(Clone, Default)]
 pub struct Env {
     pub bindings: Rc<RefCell<HashMap<String, Thunk>>>,
+    pub with_context: Option<Thunk>,
     pub parent: Option<Rc<Env>>,
 }
 
@@ -81,6 +84,7 @@ impl Env {
     pub fn new() -> Self {
         Env {
             bindings: Rc::new(RefCell::new(HashMap::new())),
+            with_context: None,
             parent: None,
         }
     }
@@ -88,6 +92,15 @@ impl Env {
     pub fn extend(&self) -> Self {
         Env {
             bindings: Rc::new(RefCell::new(HashMap::new())),
+            with_context: None,
+            parent: Some(Rc::new(self.clone())),
+        }
+    }
+
+    pub fn with_context(&self, thunk: Thunk) -> Self {
+        Env {
+            bindings: Rc::new(RefCell::new(HashMap::new())),
+            with_context: Some(thunk),
             parent: Some(Rc::new(self.clone())),
         }
     }

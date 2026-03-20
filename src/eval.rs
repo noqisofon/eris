@@ -99,55 +99,101 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
             body: *body.clone(),
             env: env.clone(),
         }),
+        Expr::With(obj, body) => {
+            let obj_thunk = Thunk::new(*obj.clone(), env.clone());
+            let new_env = env.with_context(obj_thunk);
+            eval_expr(body, &new_env)
+        }
+        Expr::ImplicitAccess(fields) => {
+            let mut current_env = Some(env.clone());
+            let mut found_with = None;
+            while let Some(e) = current_env {
+                if let Some(ctx) = &e.with_context {
+                    found_with = Some(ctx.clone());
+                    break;
+                }
+                current_env = e.parent.as_deref().cloned();
+            }
+            let ctx_thunk = found_with
+                .ok_or_else(|| "Implicit field access outside of 'with' block".to_string())?;
+            let mut current = evaluate(ctx_thunk)?;
+            for field in fields {
+                match current {
+                    Value::AttrSet(mut map) => {
+                        let thunk = map.remove(field).ok_or_else(|| {
+                            format!("Field '{}' not found in attribute set", field)
+                        })?;
+                        current = evaluate(thunk)?;
+                    }
+                    _ => {
+                        return Err(format!(
+                            "Cannot access field '{}' on non-attribute set {:?}",
+                            field, current
+                        ));
+                    }
+                }
+            }
+            Ok(current)
+        }
         Expr::App(f, arg) => {
             let func_val = eval_expr(f, env)?;
-            let (args, body, closure_env) = match func_val {
-                Value::Closure { args, body, env } => (args, body, env),
-                _ => return Err(format!("Not a function: {:?}", func_val)),
-            };
+            let arg_thunk = Thunk::new(*arg.clone(), env.clone());
 
-            let call_env = closure_env.extend();
-
-            match args {
-                Args::Positional(names) => {
-                    let arg_thunk = Thunk::new(*arg.clone(), env.clone());
-                    call_env.define(names[0].clone(), arg_thunk);
-
-                    if names.len() == 1 {
-                        eval_expr(&body, &call_env)
-                    } else {
-                        let remaining_args = Args::Positional(names[1..].to_vec());
-                        Ok(Value::Closure {
-                            args: remaining_args,
-                            body,
-                            env: call_env,
-                        })
-                    }
+            match func_val {
+                Value::NativeClosure(f) => {
+                    let arg_val = evaluate(arg_thunk)?;
+                    f(arg_val)
                 }
-                Args::Destructure { names, ignore_rest } => {
-                    let arg_val = eval_expr(arg, env)?;
-                    match arg_val {
-                        Value::AttrSet(mut map) => {
-                            for name in names {
-                                let val_thunk = map.remove(&name).ok_or_else(|| {
-                                    format!(
-                                        "Missing required attribute '{}' in destructuring",
-                                        name
-                                    )
-                                })?;
-                                call_env.define(name, val_thunk);
-                            }
-                            if !ignore_rest && !map.is_empty() {
-                                return Err(format!(
-                                    "Unexpected attributes in destructuring: {:?}",
-                                    map.keys()
-                                ));
+                Value::Closure {
+                    args,
+                    body,
+                    env: closure_env,
+                } => {
+                    let call_env = closure_env.extend();
+                    match args {
+                        Args::Positional(names) => {
+                            call_env.define(names[0].clone(), arg_thunk);
+
+                            if names.len() == 1 {
+                                eval_expr(&body, &call_env)
+                            } else {
+                                let remaining_args = Args::Positional(names[1..].to_vec());
+                                Ok(Value::Closure {
+                                    args: remaining_args,
+                                    body,
+                                    env: call_env,
+                                })
                             }
                         }
-                        _ => return Err("Expected an attribute set for destructuring".into()),
+                        Args::Destructure { names, ignore_rest } => {
+                            let arg_val = evaluate(arg_thunk)?;
+                            match arg_val {
+                                Value::AttrSet(mut map) => {
+                                    for name in names {
+                                        let val_thunk = map.remove(&name).ok_or_else(|| {
+                                            format!(
+                                                "Missing required attribute '{}' in destructuring",
+                                                name
+                                            )
+                                        })?;
+                                        call_env.define(name, val_thunk);
+                                    }
+                                    if !ignore_rest && !map.is_empty() {
+                                        return Err(format!(
+                                            "Unexpected attributes in destructuring: {:?}",
+                                            map.keys()
+                                        ));
+                                    }
+                                }
+                                _ => {
+                                    return Err("Expected an attribute set for destructuring".into());
+                                }
+                            }
+                            eval_expr(&body, &call_env)
+                        }
                     }
-                    eval_expr(&body, &call_env)
                 }
+                _ => return Err(format!("Not a function: {:?}", func_val)),
             }
         }
         Expr::LetIn(bindings, body) => {

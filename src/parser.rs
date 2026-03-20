@@ -3,20 +3,17 @@ use chumsky::prelude::*;
 
 pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src, char>>> {
     recursive(|expr| {
-        let ident = text::ident().map(|s: &str| s.to_string()).padded();
+        let ident = text::ident().map(|s: &str| s.to_string());
 
         let float = text::int(10)
             .then_ignore(just('.'))
             .then(text::int(10))
-            .map(|(a, b): (&str, &str)| Expr::Float(format!("{}.{}", a, b).parse().unwrap()))
-            .padded();
+            .map(|(a, b): (&str, &str)| Expr::Float(format!("{}.{}", a, b).parse().unwrap()));
 
-        let int_val = text::int(10)
-            .map(|s: &str| Expr::Int(s.parse().unwrap()))
-            .padded();
+        let int_val = text::int(10).map(|s: &str| Expr::Int(s.parse().unwrap()));
 
         let interp = just("${")
-            .ignore_then(ident.clone())
+            .ignore_then(ident.clone().padded())
             .then_ignore(just("}"))
             .map(StringPart::Interpolation);
 
@@ -36,8 +33,17 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
         let string = just('"')
             .ignore_then(string_part.repeated().collect::<Vec<_>>())
             .then_ignore(just('"'))
-            .map(Expr::String)
-            .padded();
+            .map(Expr::String);
+
+        let sq_string = just('\'')
+            .ignore_then(
+                none_of("'")
+                    .repeated()
+                    .to_slice()
+                    .map(|s: &str| vec![StringPart::Literal(s.to_string())]),
+            )
+            .then_ignore(just('\''))
+            .map(Expr::String);
 
         let path = just("p'")
             .ignore_then(
@@ -47,8 +53,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                     .map(|s: &str| s.to_string()),
             )
             .then_ignore(just('\''))
-            .map(Expr::Path)
-            .padded();
+            .map(Expr::Path);
 
         let atom = recursive(|atom| {
             let field_access = atom
@@ -69,6 +74,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
 
             let list = field_access
                 .clone()
+                .padded()
                 .repeated()
                 .collect::<Vec<_>>()
                 .delimited_by(just('[').padded(), just(']').padded())
@@ -76,6 +82,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
 
             let attr_binding = ident
                 .clone()
+                .padded()
                 .then_ignore(just('=').padded())
                 .then(expr.clone())
                 .then_ignore(just(';').padded());
@@ -97,6 +104,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
 
             let let_binding = ident
                 .clone()
+                .padded()
                 .then_ignore(just('=').padded())
                 .then(expr.clone())
                 .then_ignore(just(';').padded());
@@ -108,13 +116,34 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                 .then(expr.clone())
                 .map(|(bindings, body)| Expr::LetIn(bindings, Box::new(body)));
 
-            choice((float, int_val, string, path, list, attr_set)).or(choice((
+            let with_expr = just("with")
+                .padded()
+                .ignore_then(expr.clone())
+                .then(expr.clone())
+                .map(|(obj, body)| Expr::With(Box::new(obj), Box::new(body)));
+
+            choice((float, int_val, string, sq_string, path, list, attr_set)).or(choice((
                 let_in,
+                with_expr,
                 ident.clone().map(Expr::Ident),
                 expr.clone()
                     .delimited_by(just('(').padded(), just(')').padded()),
             )))
         });
+
+        let implicit_access = just('.')
+            .ignore_then(ident.clone())
+            .then(
+                just('.')
+                    .ignore_then(ident.clone())
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(first, mut rest)| {
+                let mut path = vec![first];
+                path.append(&mut rest);
+                Expr::ImplicitAccess(path)
+            });
 
         let field_access = atom
             .then(
@@ -131,9 +160,12 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                 }
             });
 
-        let app = field_access
-            .clone()
-            .then(field_access.repeated().collect::<Vec<_>>())
+        let app_lhs = field_access.clone().or(implicit_access.clone());
+        let app_arg = field_access.clone(); // Restrict arguments to prevent eating implicit accesses of the with body!
+
+        let app = app_lhs
+            .padded()
+            .then(app_arg.padded().repeated().collect::<Vec<_>>())
             .map(|(lhs, args)| {
                 args.into_iter()
                     .fold(lhs, |acc, arg| Expr::App(Box::new(acc), Box::new(arg)))
@@ -141,6 +173,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
 
         let lambda_pos = ident
             .clone()
+            .padded()
             .separated_by(just(',').padded())
             .allow_trailing()
             .collect::<Vec<_>>()
@@ -152,6 +185,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
             .ignore_then(
                 ident
                     .clone()
+                    .padded()
                     .separated_by(just(';').padded())
                     .allow_trailing()
                     .collect::<Vec<_>>(),
