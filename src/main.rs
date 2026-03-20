@@ -43,16 +43,12 @@ fn main() {
         std::process::exit(1);
     });
 
-    let expr = match parser()
-        .then_ignore(chumsky::prelude::end())
-        .parse(&source)
-        .into_result()
-    {
-        Ok(ast) => ast,
-        Err(errs) => {
-            for err in errs {
-                eprintln!("Parse error: {:?}", err);
-            }
+    let parse_result = parser().then_ignore(chumsky::prelude::end()).parse(&source);
+    
+    let expr = match parse_result.into_output() {
+        Some(ast) => ast,
+        None => {
+            eprintln!("Parse error failed completely.");
             std::process::exit(1);
         }
     };
@@ -117,7 +113,8 @@ mod tests {
     use super::*;
 
     fn eval_code(source: &str) -> String {
-        let ast = parser().parse(source).into_result().unwrap();
+        let parse_result = parser().then_ignore(chumsky::prelude::end()).parse(source);
+        let ast = parse_result.into_output().unwrap();
         let env = Env::new();
         let thunk = Thunk::new(ast, env);
         let val = deep_force(evaluate(thunk).unwrap()).unwrap();
@@ -192,5 +189,40 @@ mod tests {
     #[test]
     fn test_path() {
         assert_eq!(eval_code("p'./my/file.txt'"), "p'\"./my/file.txt\"'");
+    }
+
+    #[test]
+    fn test_with() {
+        assert_eq!(eval_code("let obj = { a = 1; }; in with obj .a"), "1");
+        assert_eq!(eval_code("with { a = { b = 42; }; } .a.b"), "42");
+    }
+
+    #[test]
+    fn test_bool_and_comparisons() {
+        assert_eq!(eval_code("true"), "true");
+        assert_eq!(eval_code("false"), "false");
+        assert_eq!(eval_code("10 > 5"), "true");
+        assert_eq!(eval_code("10 < 5"), "false");
+        assert_eq!(eval_code("10 >= 10"), "true");
+        assert_eq!(eval_code("10 <= 9"), "false");
+        assert_eq!(eval_code("42 == 42"), "true");
+        assert_eq!(eval_code("42 != 42"), "false");
+        assert_eq!(eval_code("\"abc\" == \"abc\""), "true");
+        assert_eq!(eval_code("\"abc\" != \"def\""), "true");
+    }
+
+    #[test]
+    fn test_logical_ops() {
+        assert_eq!(eval_code("true && false"), "false");
+        assert_eq!(eval_code("true || false"), "true");
+        assert_eq!(eval_code("false && true"), "false");
+        assert_eq!(eval_code("false || true"), "true");
+    }
+
+    #[test]
+    fn test_if_else() {
+        assert_eq!(eval_code("if true then 1 else 2"), "1");
+        assert_eq!(eval_code("if false then 1 else 2"), "2");
+        assert_eq!(eval_code("if 10 > 5 && true then \"yes\" else \"no\""), "\"yes\"");
     }
 }

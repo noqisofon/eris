@@ -89,7 +89,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                 .padded()
                 .repeated()
                 .collect::<Vec<_>>()
-                .delimited_by(just('[').padded(), just(']').padded())
+                .delimited_by(just('[').padded(), just(']'))
                 .map(Expr::List);
 
             let attr_binding = ident
@@ -102,7 +102,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
             let attr_set_body = attr_binding
                 .repeated()
                 .collect::<Vec<_>>()
-                .delimited_by(just('{').padded(), just('}').padded());
+                .delimited_by(just('{').padded(), just('}'));
 
             let attr_set =
                 just("rec")
@@ -152,7 +152,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                 if_expr,
                 ident.clone().map(Expr::Ident),
                 expr.clone()
-                    .delimited_by(just('(').padded(), just(')').padded()),
+                    .delimited_by(just('(').padded(), just(')')),
             )))
         });
 
@@ -202,7 +202,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
             .separated_by(just(',').padded())
             .allow_trailing()
             .collect::<Vec<_>>()
-            .delimited_by(just('|').padded(), just('|').padded())
+            .delimited_by(just('|').padded(), just('|'))
             .map(Args::Positional);
 
         let destructure_args = just('{')
@@ -217,7 +217,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
             )
             .then_ignore(just(';').padded().or_not())
             .then(just("...").padded().or_not())
-            .then_ignore(just('}').padded())
+            .then_ignore(just('}'))
             .map(|(names, rest)| Args::Destructure {
                 names,
                 ignore_rest: rest.is_some(),
