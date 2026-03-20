@@ -1,14 +1,41 @@
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Literal(Value),
-    Symbol(String),
-    Binary(Box<Expr>, Op, Box<Expr>),
-    Lambda(Vec<String>, Box<Expr>), // { x; y } -> ...
-    Let(Vec<(String, Expr)>, Box<Expr>),
-    AttrSet(Vec<(String, Expr)>, bool), // (fields, is_recursive)
-    FieldAccess(Box<Expr>, String),
-    App(Box<Expr>, Box<Expr>), // func arg
+    Int(i64),
+    Float(f64),
+    String(Vec<StringPart>),
+    Path(String),
+    List(Vec<Expr>),
+    AttrSet {
+        is_rec: bool,
+        attrs: Vec<(String, Expr)>,
+    },
+    Ident(String),
+    FieldAccess(Box<Expr>, Vec<String>),
+    Lambda(Args, Box<Expr>),
+    App(Box<Expr>, Box<Expr>),
+    LetIn(Vec<(String, Expr)>, Box<Expr>),
+    BinOp(Box<Expr>, Op, Box<Expr>),
 }
 
-#[derive(Debug, Clone)]
-pub enum Op { Add, Sub, Mul, Div, Concat, Merge } // ^ や \\
+#[derive(Debug, Clone, PartialEq)]
+pub enum StringPart {
+    Literal(String),
+    Interpolation(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Args {
+    Positional(Vec<String>),
+    Destructure {
+        names: Vec<String>,
+        ignore_rest: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Op {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
