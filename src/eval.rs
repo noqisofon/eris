@@ -24,6 +24,18 @@ pub fn evaluate(thunk: Thunk) -> Result<Value, String> {
 
 pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
     match expr {
+        Expr::Bool(b) => Ok(Value::Bool(*b)),
+        Expr::IfElse(cond, true_branch, false_branch) => {
+            let cond_val = eval_expr(cond, env)?;
+            match cond_val {
+                Value::Bool(true) => eval_expr(true_branch, env),
+                Value::Bool(false) => eval_expr(false_branch, env),
+                _ => Err(format!(
+                    "Condition in if expression must be a boolean, got {:?}",
+                    cond_val
+                )),
+            }
+        }
         Expr::Int(i) => Ok(Value::Int(*i)),
         Expr::Float(f) => Ok(Value::Float(*f)),
         Expr::String(parts) => {
@@ -186,7 +198,9 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                                     }
                                 }
                                 _ => {
-                                    return Err("Expected an attribute set for destructuring".into());
+                                    return Err(
+                                        "Expected an attribute set for destructuring".into()
+                                    );
                                 }
                             }
                             eval_expr(&body, &call_env)
@@ -205,6 +219,29 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
             eval_expr(body, &new_env)
         }
         Expr::BinOp(lhs, op, rhs) => {
+            if *op == Op::And {
+                let left = eval_expr(lhs, env)?;
+                if let Value::Bool(false) = left {
+                    return Ok(Value::Bool(false));
+                }
+                let right = eval_expr(rhs, env)?;
+                return match (left, right) {
+                    (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a && b)),
+                    _ => Err("Invalid types for &&".into()),
+                };
+            }
+            if *op == Op::Or {
+                let left = eval_expr(lhs, env)?;
+                if let Value::Bool(true) = left {
+                    return Ok(Value::Bool(true));
+                }
+                let right = eval_expr(rhs, env)?;
+                return match (left, right) {
+                    (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a || b)),
+                    _ => Err("Invalid types for ||".into()),
+                };
+            }
+
             let left = eval_expr(lhs, env)?;
             let right = eval_expr(rhs, env)?;
             match (left, op, right) {
@@ -230,6 +267,27 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                 (Value::Float(a), Op::Mul, Value::Int(b)) => Ok(Value::Float(a * b as f64)),
                 (Value::Int(a), Op::Div, Value::Float(b)) => Ok(Value::Float(a as f64 / b)),
                 (Value::Float(a), Op::Div, Value::Int(b)) => Ok(Value::Float(a / b as f64)),
+
+                (Value::Int(a), Op::Eq, Value::Int(b)) => Ok(Value::Bool(a == b)),
+                (Value::Int(a), Op::Neq, Value::Int(b)) => Ok(Value::Bool(a != b)),
+                (Value::Int(a), Op::Lt, Value::Int(b)) => Ok(Value::Bool(a < b)),
+                (Value::Int(a), Op::Lte, Value::Int(b)) => Ok(Value::Bool(a <= b)),
+                (Value::Int(a), Op::Gt, Value::Int(b)) => Ok(Value::Bool(a > b)),
+                (Value::Int(a), Op::Gte, Value::Int(b)) => Ok(Value::Bool(a >= b)),
+
+                (Value::Float(a), Op::Eq, Value::Float(b)) => Ok(Value::Bool(a == b)),
+                (Value::Float(a), Op::Neq, Value::Float(b)) => Ok(Value::Bool(a != b)),
+                (Value::Float(a), Op::Lt, Value::Float(b)) => Ok(Value::Bool(a < b)),
+                (Value::Float(a), Op::Lte, Value::Float(b)) => Ok(Value::Bool(a <= b)),
+                (Value::Float(a), Op::Gt, Value::Float(b)) => Ok(Value::Bool(a > b)),
+                (Value::Float(a), Op::Gte, Value::Float(b)) => Ok(Value::Bool(a >= b)),
+
+                (Value::String(a), Op::Eq, Value::String(b)) => Ok(Value::Bool(a == b)),
+                (Value::String(a), Op::Neq, Value::String(b)) => Ok(Value::Bool(a != b)),
+
+                (Value::Bool(a), Op::Eq, Value::Bool(b)) => Ok(Value::Bool(a == b)),
+                (Value::Bool(a), Op::Neq, Value::Bool(b)) => Ok(Value::Bool(a != b)),
+
                 _ => Err("Invalid types for binary operation".into()),
             }
         }

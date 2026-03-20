@@ -9,6 +9,7 @@ use crate::ast::{Args, Expr};
 pub enum Value {
     Int(i64),
     Float(f64),
+    Bool(bool),
     String(String),
     Path(String),
     List(Vec<Thunk>),
@@ -22,7 +23,8 @@ impl fmt::Debug for Value {
         match self {
             Value::Int(i) => write!(f, "{}", i),
             Value::Float(fl) => write!(f, "{}", fl),
-            Value::String(s) => write!(f, "{:?}", s),
+            Value::Bool(b) => write!(f, "{}", b),
+            Value::String(s) => write!(f, "\"{}\"", s),
             Value::Path(p) => write!(f, "p'{:?}'", p),
             Value::List(l) => {
                 write!(f, "[ ")?;

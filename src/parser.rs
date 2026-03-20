@@ -3,12 +3,24 @@ use chumsky::prelude::*;
 
 pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src, char>>> {
     recursive(|expr| {
-        let ident = text::ident().map(|s: &str| s.to_string());
+        let ident = text::ident()
+            .filter(|s: &&str| {
+                !matches!(
+                    *s,
+                    "if" | "then" | "else" | "let" | "in" | "with" | "true" | "false" | "rec"
+                )
+            })
+            .map(|s: &str| s.to_string());
 
         let float = text::int(10)
             .then_ignore(just('.'))
             .then(text::int(10))
             .map(|(a, b): (&str, &str)| Expr::Float(format!("{}.{}", a, b).parse().unwrap()));
+
+        let bool_val = choice((
+            text::keyword("true").to(Expr::Bool(true)),
+            text::keyword("false").to(Expr::Bool(false)),
+        ));
 
         let int_val = text::int(10).map(|s: &str| Expr::Int(s.parse().unwrap()));
 
@@ -122,9 +134,22 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                 .then(expr.clone())
                 .map(|(obj, body)| Expr::With(Box::new(obj), Box::new(body)));
 
-            choice((float, int_val, string, sq_string, path, list, attr_set)).or(choice((
+            let if_expr = just("if")
+                .padded()
+                .ignore_then(expr.clone())
+                .then_ignore(just("then").padded())
+                .then(expr.clone())
+                .then_ignore(just("else").padded())
+                .then(expr.clone())
+                .map(|((cond, t), f)| Expr::IfElse(Box::new(cond), Box::new(t), Box::new(f)));
+
+            choice((
+                float, int_val, string, sq_string, path, bool_val, list, attr_set,
+            ))
+            .or(choice((
                 let_in,
                 with_expr,
+                if_expr,
                 ident.clone().map(Expr::Ident),
                 expr.clone()
                     .delimited_by(just('(').padded(), just(')').padded()),
@@ -232,6 +257,62 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                 })
             });
 
-        lambda.or(sum).padded()
+        let comp_op = choice((
+            just("==").to(Op::Eq),
+            just("!=").to(Op::Neq),
+            just("<=").to(Op::Lte),
+            just(">=").to(Op::Gte),
+            just('<').to(Op::Lt),
+            just('>').to(Op::Gt),
+        ));
+
+        let comp = sum
+            .clone()
+            .then(
+                comp_op
+                    .padded()
+                    .then(sum.clone())
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(lhs, rhs)| {
+                rhs.into_iter().fold(lhs, |acc, (op, arg)| {
+                    Expr::BinOp(Box::new(acc), op, Box::new(arg))
+                })
+            });
+
+        let logical_and = comp
+            .clone()
+            .then(
+                just("&&")
+                    .to(Op::And)
+                    .padded()
+                    .then(comp.clone())
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(lhs, rhs)| {
+                rhs.into_iter().fold(lhs, |acc, (op, arg)| {
+                    Expr::BinOp(Box::new(acc), op, Box::new(arg))
+                })
+            });
+
+        let logical_or = logical_and
+            .clone()
+            .then(
+                just("||")
+                    .to(Op::Or)
+                    .padded()
+                    .then(logical_and.clone())
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(lhs, rhs)| {
+                rhs.into_iter().fold(lhs, |acc, (op, arg)| {
+                    Expr::BinOp(Box::new(acc), op, Box::new(arg))
+                })
+            });
+
+        lambda.or(logical_or).padded()
     })
 }

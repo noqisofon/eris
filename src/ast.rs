@@ -2,6 +2,7 @@
 pub enum Expr {
     Int(i64),
     Float(f64),
+    Bool(bool),
     String(Vec<StringPart>),
     Path(String),
     List(Vec<Expr>),
@@ -17,6 +18,7 @@ pub enum Expr {
     BinOp(Box<Expr>, Op, Box<Expr>),
     ImplicitAccess(Vec<String>),
     With(Box<Expr>, Box<Expr>),
+    IfElse(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,4 +42,12 @@ pub enum Op {
     Sub,
     Mul,
     Div,
+    Eq,
+    Neq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+    And,
+    Or,
 }
