@@ -1,0 +1,5 @@
+{ builtin } ->
+  let 
+    fmt = builtin.import 'fmt';
+  in
+    fmt.println 'Hello, let and builtin!'

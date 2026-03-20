@@ -1,0 +1,3 @@
+{ builtin } ->
+  with builtin.import 'fmt'
+    .println 'Hello, with and implicit access!'

@@ -1,0 +1,10 @@
+{ builtin } ->
+  let
+    fmt = builtin.import 'fmt';
+    x = 42;
+    msg = if x > 2 && x != 0 then
+      "foo!"
+    else
+      "bar";
+  in
+    fmt.println msg
