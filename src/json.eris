@@ -1,5 +1,5 @@
 # json.eris
 { __native } -> rec {
-  from = __native.json_from;
-  to = __native.json_to;
+  from = |s| -> __native.json_from s;
+  to = |obj| -> __native.json_to obj;
 }

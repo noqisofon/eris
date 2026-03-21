@@ -1,0 +1,10 @@
+{ builtin } ->
+  let
+    list = builtin.import 'list';
+    json = builtin.import 'json';
+    fs   = builtin.import 'fs';
+  in
+    let x = list.map (|x| -> x * 2) [ 1 2 3 4 ];
+    in
+      fs.write_file p'./honi.json' (json.to x)
+    

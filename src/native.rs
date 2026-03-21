@@ -388,7 +388,6 @@ pub fn build_native_env() -> Value {
     // -- json --
     map.insert("json_to".to_string(), Thunk::evaluated(native_fn(|v| {
         fn val_to_json(val: Value) -> Result<serde_json::Value, String> {
-            println!("trace val_to_json: {:?}", val);
             match val {
                 Value::Int(i) => Ok(serde_json::Value::Number(i.into())),
                 Value::Float(f) => {

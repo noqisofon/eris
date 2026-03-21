@@ -1,6 +1,6 @@
 # fs.eris
 { __native } -> rec {
-  read_file = __native.fs_read_file;
-  read_dir = __native.fs_read_dir;
-  write_file = __native.fs_write_file;
+  read_file = |path| -> __native.fs_read_file path;
+  read_dir = |path| -> __native.fs_read_dir path;
+  write_file = |path, content| -> __native.fs_write_file path content;
 }
