@@ -31,7 +31,7 @@ fn deep_force(val: Value) -> Result<Value, String> {
     }
 }
 
-fn main() {
+fn run_interpreter() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: eris <file.eris>");
@@ -127,6 +127,17 @@ fn main() {
         }
         Err(e) => eprintln!("Runtime error: {}", e),
     }
+}
+
+fn main() {
+    // Chumsky 0.12 in debug mode uses massive stack space that overflows the default 1MB Windows stack.
+    // Instead of forcing users to build in release mode, we spawn the interpreter in an 8MB stack thread.
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(run_interpreter)
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[cfg(test)]
