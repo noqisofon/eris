@@ -1,0 +1,5 @@
+# json.eris
+{ __native } -> rec {
+  from = __native.json_from;
+  to = __native.json_to;
+}

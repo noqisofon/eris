@@ -2,6 +2,11 @@ use crate::ast::*;
 use chumsky::prelude::*;
 
 pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src, char>>> {
+    let comment = text::inline_whitespace()
+        .then(just('#'))
+        .then(none_of('\n').repeated())
+        .padded();
+
     recursive(|expr| {
         let ident = text::ident()
             .filter(|s: &&str| {
@@ -315,4 +320,5 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
 
         lambda.or(logical_or).padded()
     })
+    .padded_by(comment.repeated())
 }

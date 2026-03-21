@@ -1,0 +1,7 @@
+# string.eris
+{ __native } -> rec {
+  concat = __native.string_concat;
+  split = __native.string_split;
+  trim = __native.string_trim;
+  interpolate = __native.string_interpolate;
+}

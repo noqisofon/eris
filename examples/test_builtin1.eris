@@ -1,5 +1,4 @@
 { builtin } ->
-  let 
-    fmt = builtin.import 'fmt';
-  in
-    fmt.println 'Hello, let and builtin!'
+let fmt = builtin.import "fmt";
+    list = builtin.import "list";
+in fmt.println (list.foldl (|acc| -> |x| -> acc + x) 0 [ 1 2 3 4 5 ])

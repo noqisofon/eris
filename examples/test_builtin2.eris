@@ -1,3 +1,4 @@
 { builtin } ->
-  with builtin.import 'fmt'
-    .println 'Hello, with and implicit access!'
+let fmt = builtin.import "fmt";
+    string = builtin.import "string";
+in fmt.println (string.concat "hello " "world")

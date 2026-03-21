@@ -1,0 +1,9 @@
+# fmt.eris
+{ __native } -> rec {
+  println = __native.fmt_println;
+  eprintln = __native.fmt_eprintln;
+  print = __native.fmt_print;
+  eprint = __native.fmt_eprint;
+  printf = __native.fmt_printf;
+  eprintf = __native.fmt_eprintf;
+}

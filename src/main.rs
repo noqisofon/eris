@@ -2,6 +2,7 @@ pub mod ast;
 pub mod eval;
 pub mod parser;
 pub mod value;
+pub mod native;
 
 use crate::eval::evaluate;
 use crate::parser::parser;
@@ -66,25 +67,45 @@ fn main() {
         env: closure_env,
     } = result_val
     {
-        let mut map = std::collections::HashMap::new();
-        let import_func = Value::NativeClosure(std::rc::Rc::new(|arg| match arg {
-            Value::String(s) if s == "fmt" => {
-                let mut fmt_map = std::collections::HashMap::new();
-                let println_func =
-                    Value::NativeClosure(std::rc::Rc::new(|print_arg| match print_arg {
-                        Value::String(ps) => {
-                            println!("{}", ps);
-                            Ok(Value::Int(0))
-                        }
-                        _ => Err("println expects a string".into()),
-                    }));
-                fmt_map.insert("println".to_string(), Thunk::evaluated(println_func));
-                Ok(Value::AttrSet(fmt_map))
+        // Produce the __native AttrSet from native.rs
+        let native_val = crate::native::build_native_env();
+
+        // Evaluate builtin.eris script using include_str!
+        let builtin_source = include_str!("builtin.eris");
+        let builtin_parse = parser().then_ignore(chumsky::prelude::end()).parse(builtin_source)
+            .into_output()
+            .unwrap_or_else(|| {
+                eprintln!("Parse error in builtin.eris");
+                std::process::exit(1);
+            });
+        
+        let builtin_env = Env::new();
+        let builtin_thunk = Thunk::new(builtin_parse, builtin_env);
+        let builtin_closure = evaluate(builtin_thunk).unwrap_or_else(|e| {
+            eprintln!("Runtime error evaluating builtin.eris: {}", e);
+            std::process::exit(1);
+        });
+
+        // Pass { __native } to builtin_closure to get the `builtin` module
+        let builtin_val = if let Value::Closure { 
+            args: b_args, body: b_body, env: b_env 
+        } = builtin_closure {
+            let call_env = b_env.extend();
+            if let crate::ast::Args::Destructure { names, .. } = b_args {
+                for name in names {
+                    if name == "__native" {
+                        call_env.define(name, Thunk::evaluated(native_val.clone()));
+                    }
+                }
             }
-            _ => Err("import expects 'fmt'".into()),
-        }));
-        map.insert("import".to_string(), Thunk::evaluated(import_func));
-        let builtin_val = Value::AttrSet(map);
+            crate::eval::eval_expr(&b_body, &call_env).unwrap_or_else(|e| {
+                eprintln!("Runtime error applying __native to builtin.eris: {}", e);
+                std::process::exit(1);
+            })
+        } else {
+            eprintln!("builtin.eris did not return a closure");
+            std::process::exit(1);
+        };
 
         let call_env = closure_env.extend();
         if let crate::ast::Args::Destructure { names, .. } = args {
@@ -101,8 +122,8 @@ fn main() {
     }
 
     match deep_force(result_val) {
-        Ok(val) => {
-            // Int(0) indicates a successful procedural/effectful script termination from fmt.println usually
+        Ok(_val) => {
+            // Evaluated successfully
         }
         Err(e) => eprintln!("Runtime error: {}", e),
     }

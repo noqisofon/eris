@@ -1,0 +1,468 @@
+use crate::ast::Expr;
+use crate::eval::evaluate;
+use crate::value::{Env, Thunk, Value};
+use chumsky::Parser;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+pub fn native_fn<F>(f: F) -> Value
+where
+    F: Fn(Value) -> Result<Value, String> + 'static,
+{
+    Value::NativeClosure(Rc::new(f))
+}
+
+pub fn build_native_env() -> Value {
+    let mut map = HashMap::new();
+    let native_ref = Rc::new(RefCell::new(None));
+
+    // -- abort --
+    map.insert(
+        "abort".to_string(),
+        Thunk::evaluated(native_fn(|v| {
+            let code = match v {
+                Value::Int(i) => i as i32,
+                _ => 1,
+            };
+            std::process::exit(code);
+        })),
+    );
+
+    // -- import --
+    let native_ref_clone = native_ref.clone();
+    
+    // Cache for standard library modules to prevent parsing deep in the stack
+    let mut stdlib_cache = HashMap::new();
+
+    let preload_module = |name: &str, source: &str| -> Result<Value, String> {
+        let parse_result = crate::parser::parser()
+            .then_ignore(chumsky::prelude::end())
+            .parse(source);
+        let expr = parse_result.into_output().ok_or_else(|| format!("Parse error in module {}", name))?;
+        let env = Env::new();
+        let thunk = Thunk::new(expr, env);
+        Ok(evaluate(thunk)?)
+    };
+
+    stdlib_cache.insert("fmt".to_string(), preload_module("fmt", include_str!("fmt.eris")).unwrap());
+    stdlib_cache.insert("list".to_string(), preload_module("list", include_str!("list.eris")).unwrap());
+    stdlib_cache.insert("string".to_string(), preload_module("string", include_str!("string.eris")).unwrap());
+    stdlib_cache.insert("attr".to_string(), preload_module("attr", include_str!("attr.eris")).unwrap());
+    stdlib_cache.insert("fs".to_string(), preload_module("fs", include_str!("fs.eris")).unwrap());
+    stdlib_cache.insert("json".to_string(), preload_module("json", include_str!("json.eris")).unwrap());
+
+    map.insert(
+        "import".to_string(),
+        Thunk::evaluated(native_fn(move |v| {
+            let module_name = match v {
+                Value::String(s) => s,
+                _ => return Err(format!("import expects a string, got {:?}", v)),
+            };
+
+            let result_val = if let Some(cached_val) = stdlib_cache.get(&module_name) {
+                cached_val.clone()
+            } else {
+                let source = std::fs::read_to_string(&module_name)
+                    .map_err(|e| format!("Error loading module {}: {}", module_name, e))?;
+
+                let parse_result = crate::parser::parser()
+                    .then_ignore(chumsky::prelude::end())
+                    .parse(source.as_str());
+                let expr = parse_result.into_output().ok_or_else(|| format!("Parse error in module {}", module_name))?;
+
+                let env = Env::new();
+                let thunk = Thunk::new(expr, env);
+                evaluate(thunk)?
+            };
+
+            if let Value::Closure { args, body, env: closure_env } = result_val {
+                let call_env = closure_env.extend();
+                if let crate::ast::Args::Destructure { names, .. } = args {
+                    for name in names {
+                        if name == "__native" {
+                            let nv = native_ref_clone.borrow().clone().unwrap();
+                            call_env.define(name, Thunk::evaluated(nv));
+                        }
+                    }
+                }
+                crate::eval::eval_expr(&body, &call_env)
+            } else {
+                Ok(result_val)
+            }
+        })),
+    );
+
+    // -- fmt --
+    map.insert("fmt_println".to_string(), Thunk::evaluated(native_fn(|v| {
+        match v {
+            Value::String(s) => println!("{}", s),
+            v => println!("{:?}", v),
+        }
+        Ok(Value::Int(0))
+    })));
+    map.insert("fmt_eprintln".to_string(), Thunk::evaluated(native_fn(|v| {
+        match v {
+            Value::String(s) => eprintln!("{}", s),
+            v => eprintln!("{:?}", v),
+        }
+        Ok(Value::Int(0))
+    })));
+    map.insert("fmt_print".to_string(), Thunk::evaluated(native_fn(|v| {
+        use std::io::Write;
+        match v {
+            Value::String(s) => print!("{}", s),
+            v => print!("{:?}", v),
+        }
+        let _ = std::io::stdout().flush();
+        Ok(Value::Int(0))
+    })));
+    map.insert("fmt_eprint".to_string(), Thunk::evaluated(native_fn(|v| {
+        use std::io::Write;
+        match v {
+            Value::String(s) => eprint!("{}", s),
+            v => eprint!("{:?}", v),
+        }
+        let _ = std::io::stderr().flush();
+        Ok(Value::Int(0))
+    })));
+    map.insert("fmt_printf".to_string(), Thunk::evaluated(native_fn(|v| {
+        // Simple mock for now, printf would need parsing. We just print.
+        match v {
+            Value::String(s) => print!("{}", s),
+            v => print!("{:?}", v),
+        }
+        Ok(Value::Int(0))
+    })));
+    map.insert("fmt_eprintf".to_string(), Thunk::evaluated(native_fn(|v| {
+        match v {
+            Value::String(s) => eprint!("{}", s),
+            v => eprint!("{:?}", v),
+        }
+        Ok(Value::Int(0))
+    })));
+
+    // -- list --
+    map.insert("list_map".to_string(), Thunk::evaluated(native_fn(|func| {
+        Ok(native_fn(move |list| {
+            if let Value::List(thunks) = list {
+                let mut res = Vec::new();
+                for t in thunks {
+                    let arg = evaluate(t)?;
+                    let apply_env = Env::new();
+                    // To apply `func` (which is a Value) to `arg` (which is a Value),
+                    // we can construct an App expr or manually evaluate if it's a closure.
+                    // Doing App expr is easiest:
+                    let app_expr = Expr::App(
+                        Box::new(Expr::Ident("f".to_string())),
+                        Box::new(Expr::Ident("x".to_string())),
+                    );
+                    apply_env.define("f".to_string(), Thunk::evaluated(func.clone()));
+                    apply_env.define("x".to_string(), Thunk::evaluated(arg));
+                    let mapped = crate::eval::eval_expr(&app_expr, &apply_env)?;
+                    res.push(Thunk::evaluated(mapped));
+                }
+                Ok(Value::List(res))
+            } else {
+                Err("list.map expects a list".into())
+            }
+        }))
+    })));
+    map.insert("list_filter".to_string(), Thunk::evaluated(native_fn(|func| {
+        Ok(native_fn(move |list| {
+            if let Value::List(thunks) = list {
+                let mut res = Vec::new();
+                for t in thunks {
+                    let arg = evaluate(t.clone())?;
+                    let apply_env = Env::new();
+                    let app_expr = Expr::App(
+                        Box::new(Expr::Ident("f".to_string())),
+                        Box::new(Expr::Ident("x".to_string())),
+                    );
+                    apply_env.define("f".to_string(), Thunk::evaluated(func.clone()));
+                    apply_env.define("x".to_string(), Thunk::evaluated(arg));
+                    let is_match = crate::eval::eval_expr(&app_expr, &apply_env)?;
+                    if let Value::Bool(true) = is_match {
+                        res.push(t);
+                    }
+                }
+                Ok(Value::List(res))
+            } else {
+                Err("list.filter expects a list".into())
+            }
+        }))
+    })));
+    map.insert("list_foldl".to_string(), Thunk::evaluated(native_fn(|func| {
+        Ok(native_fn(move |init| {
+            let func_clone = func.clone();
+            Ok(native_fn(move |list| {
+                if let Value::List(thunks) = list {
+                    let mut acc = init.clone();
+                    for t in thunks {
+                        let arg = evaluate(t)?;
+                        let apply_env = Env::new();
+                        let app1 = Expr::App(
+                            Box::new(Expr::Ident("f".to_string())),
+                            Box::new(Expr::Ident("acc".to_string())),
+                        );
+                        let app2 = Expr::App(
+                            Box::new(app1),
+                            Box::new(Expr::Ident("x".to_string())),
+                        );
+                        apply_env.define("f".to_string(), Thunk::evaluated(func_clone.clone()));
+                        apply_env.define("acc".to_string(), Thunk::evaluated(acc));
+                        apply_env.define("x".to_string(), Thunk::evaluated(arg));
+                        acc = crate::eval::eval_expr(&app2, &apply_env)?;
+                    }
+                    Ok(acc)
+                } else {
+                    Err("list.foldl expects a list".into())
+                }
+            }))
+        }))
+    })));
+    map.insert("list_head".to_string(), Thunk::evaluated(native_fn(|v| {
+        if let Value::List(thunks) = v {
+            if thunks.is_empty() {
+                Err("head on empty list".into())
+            } else {
+                evaluate(thunks[0].clone())
+            }
+        } else {
+            Err("list.head expects a list".into())
+        }
+    })));
+    map.insert("list_tail".to_string(), Thunk::evaluated(native_fn(|v| {
+        if let Value::List(thunks) = v {
+            if thunks.is_empty() {
+                Err("tail on empty list".into())
+            } else {
+                Ok(Value::List(thunks[1..].to_vec()))
+            }
+        } else {
+            Err("list.tail expects a list".into())
+        }
+    })));
+
+    // -- string --
+    map.insert("string_concat".to_string(), Thunk::evaluated(native_fn(|s1| {
+        Ok(native_fn(move |s2| {
+            match (&s1, &s2) {
+                (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{}{}", a, b))),
+                _ => Err("string.concat expects two strings".into()),
+            }
+        }))
+    })));
+    map.insert("string_split".to_string(), Thunk::evaluated(native_fn(|sep| {
+        Ok(native_fn(move |s| {
+            match (&sep, &s) {
+                (Value::String(a), Value::String(b)) => {
+                    let parts: Vec<Thunk> = b.split(a)
+                        .map(|part| Thunk::evaluated(Value::String(part.to_string())))
+                        .collect();
+                    Ok(Value::List(parts))
+                }
+                _ => Err("string.split expects two strings".into()),
+            }
+        }))
+    })));
+    map.insert("string_trim".to_string(), Thunk::evaluated(native_fn(|s| {
+        match s {
+            Value::String(a) => Ok(Value::String(a.trim().to_string())),
+            _ => Err("string.trim expects a string".into()),
+        }
+    })));
+    map.insert("string_interpolate".to_string(), Thunk::evaluated(native_fn(|s| {
+        // interpolation is already a language feature, this might just pass through or we can format.
+        Ok(s)
+    })));
+
+    // -- attr --
+    map.insert("attr_names".to_string(), Thunk::evaluated(native_fn(|v| {
+        if let Value::AttrSet(map) = v {
+            let mut keys: Vec<String> = map.keys().cloned().collect();
+            keys.sort();
+            let thunks = keys.into_iter().map(|k| Thunk::evaluated(Value::String(k))).collect();
+            Ok(Value::List(thunks))
+        } else {
+            Err("attr.names expects an attrset".into())
+        }
+    })));
+    map.insert("attr_values".to_string(), Thunk::evaluated(native_fn(|v| {
+        if let Value::AttrSet(map) = v {
+            let mut keys: Vec<String> = map.keys().cloned().collect();
+            keys.sort();
+            let thunks = keys.into_iter().map(|k| map.get(&k).unwrap().clone()).collect();
+            Ok(Value::List(thunks))
+        } else {
+            Err("attr.values expects an attrset".into())
+        }
+    })));
+    map.insert("attr_has".to_string(), Thunk::evaluated(native_fn(|name| {
+        Ok(native_fn(move |v| {
+            if let (Value::String(k), Value::AttrSet(map)) = (&name, &v) {
+                Ok(Value::Bool(map.contains_key(k)))
+            } else {
+                Err("attr.has expects a string and an attrset".into())
+            }
+        }))
+    })));
+    map.insert("attr_get".to_string(), Thunk::evaluated(native_fn(|name| {
+        Ok(native_fn(move |v| {
+            if let (Value::String(k), Value::AttrSet(map)) = (&name, &v) {
+                if let Some(thunk) = map.get(k) {
+                    evaluate(thunk.clone())
+                } else {
+                    Err(format!("attribute {} not found", k))
+                }
+            } else {
+                Err("attr.get expects a string and an attrset".into())
+            }
+        }))
+    })));
+    map.insert("attr_merge".to_string(), Thunk::evaluated(native_fn(|a| {
+        Ok(native_fn(move |b| {
+            if let (Value::AttrSet(map1), Value::AttrSet(map2)) = (&a, &b) {
+                let mut map = map1.clone();
+                for (k, v) in map2 {
+                    map.insert(k.clone(), v.clone());
+                }
+                Ok(Value::AttrSet(map))
+            } else {
+                Err("attr.merge expects two attrsets".into())
+            }
+        }))
+    })));
+
+    // -- fs --
+    map.insert("fs_read_file".to_string(), Thunk::evaluated(native_fn(|v| {
+        let path = match v {
+            Value::String(s) => s,
+            Value::Path(p) => p,
+            _ => return Err("fs.read_file expects a string or path".into()),
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(s) => Ok(Value::String(s)),
+            Err(e) => Err(format!("failed to read file {}: {}", path, e)),
+        }
+    })));
+    map.insert("fs_read_dir".to_string(), Thunk::evaluated(native_fn(|v| {
+        let path = match v {
+            Value::String(s) => s,
+            Value::Path(p) => p,
+            _ => return Err("fs.read_dir expects a string or path".into()),
+        };
+        match std::fs::read_dir(&path) {
+            Ok(entries) => {
+                let mut thunks = Vec::new();
+                for entry in entries {
+                    if let Ok(e) = entry {
+                        if let Ok(name) = e.file_name().into_string() {
+                            thunks.push(Thunk::evaluated(Value::String(name)));
+                        }
+                    }
+                }
+                Ok(Value::List(thunks))
+            }
+            Err(e) => Err(format!("failed to read directory {}: {}", path, e)),
+        }
+    })));
+    map.insert("fs_write_file".to_string(), Thunk::evaluated(native_fn(|path_val| {
+        Ok(native_fn(move |content_val| {
+            let path = match &path_val {
+                Value::String(s) => s,
+                Value::Path(p) => p,
+                _ => return Err("fs.write_file expects a string or path".into()),
+            };
+            let content = match &content_val {
+                Value::String(s) => s,
+                _ => return Err("fs.write_file expects a string content".into()),
+            };
+            match std::fs::write(path, content) {
+                Ok(_) => Ok(Value::Int(0)),
+                Err(e) => Err(format!("failed to write file {}: {}", path, e)),
+            }
+        }))
+    })));
+
+    // -- json --
+    map.insert("json_to".to_string(), Thunk::evaluated(native_fn(|v| {
+        fn val_to_json(val: Value) -> Result<serde_json::Value, String> {
+            println!("trace val_to_json: {:?}", val);
+            match val {
+                Value::Int(i) => Ok(serde_json::Value::Number(i.into())),
+                Value::Float(f) => {
+                    if let Some(n) = serde_json::Number::from_f64(f) {
+                        Ok(serde_json::Value::Number(n))
+                    } else {
+                        Err("invalid float for JSON".into())
+                    }
+                }
+                Value::Bool(b) => Ok(serde_json::Value::Bool(b)),
+                Value::String(s) => Ok(serde_json::Value::String(s)),
+                Value::Path(s) => Ok(serde_json::Value::String(s)),
+                Value::List(thunks) => {
+                    let mut arr = Vec::new();
+                    for t in thunks {
+                        arr.push(val_to_json(evaluate(t)?)?);
+                    }
+                    Ok(serde_json::Value::Array(arr))
+                }
+                Value::AttrSet(map) => {
+                    let mut obj = serde_json::Map::new();
+                    for (k, thunk) in map {
+                        obj.insert(k, val_to_json(evaluate(thunk)?)?);
+                    }
+                    Ok(serde_json::Value::Object(obj))
+                }
+                _ => Err("cannot convert closure/builtin to json".into()),
+            }
+        }
+        let j = val_to_json(v)?;
+        Ok(Value::String(j.to_string()))
+    })));
+    map.insert("json_from".to_string(), Thunk::evaluated(native_fn(|v| {
+        let s = match v {
+            Value::String(st) => st,
+            _ => return Err("json.from expects a string".into()),
+        };
+        let j: serde_json::Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
+        
+        fn json_to_val(j: serde_json::Value) -> Result<Value, String> {
+            match j {
+                serde_json::Value::Null => Ok(Value::AttrSet(HashMap::new())), // Eris has no null, fallback to {}
+                serde_json::Value::Bool(b) => Ok(Value::Bool(b)),
+                serde_json::Value::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        Ok(Value::Int(i))
+                    } else if let Some(f) = n.as_f64() {
+                        Ok(Value::Float(f))
+                    } else {
+                        Ok(Value::Int(0))
+                    }
+                }
+                serde_json::Value::String(s) => Ok(Value::String(s)),
+                serde_json::Value::Array(arr) => {
+                    let mut thunks = Vec::new();
+                    for item in arr {
+                        thunks.push(Thunk::evaluated(json_to_val(item)?));
+                    }
+                    Ok(Value::List(thunks))
+                }
+                serde_json::Value::Object(obj) => {
+                    let mut map = HashMap::new();
+                    for (k, v) in obj {
+                        map.insert(k, Thunk::evaluated(json_to_val(v)?));
+                    }
+                    Ok(Value::AttrSet(map))
+                }
+            }
+        }
+        json_to_val(j)
+    })));
+
+    let native_val = Value::AttrSet(map);
+    *native_ref.borrow_mut() = Some(native_val.clone());
+
+    native_val
+}

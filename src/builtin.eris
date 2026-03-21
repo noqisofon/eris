@@ -1,0 +1,5 @@
+# builtin.eris
+{ __native } -> rec {
+  abort = __native.abort;
+  import = __native.import;
+}

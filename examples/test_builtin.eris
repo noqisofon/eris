@@ -1,0 +1,11 @@
+{ builtin } ->
+let fmt = builtin.import "fmt";
+    list = builtin.import "list";
+    json = builtin.import "json";
+    string = builtin.import "string";
+    fs = builtin.import "fs";
+in let _ = fmt.println (json.to {
+  test_list = list.map (|x| -> x * 2) [ 1 2 3 ];
+  test_string = string.concat "hello " "world";
+});
+in fmt.println "DONE"

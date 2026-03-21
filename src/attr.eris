@@ -1,0 +1,8 @@
+# attr.eris
+{ __native } -> rec {
+  names = __native.attr_names;
+  values = __native.attr_values;
+  has = __native.attr_has;
+  get = __native.attr_get;
+  merge = __native.attr_merge;
+}

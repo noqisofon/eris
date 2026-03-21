@@ -1,0 +1,7 @@
+{ builtin } ->
+let fmt = builtin.import "fmt";
+    list = builtin.import "list";
+    json = builtin.import "json";
+in
+let x = list.map (|x| -> x * 2) [ 1 2 3 ];
+in fmt.println (json.to x)

@@ -1,0 +1,8 @@
+# list.eris
+{ __native } -> rec {
+  map = __native.list_map;
+  filter = __native.list_filter;
+  foldl = __native.list_foldl;
+  head = __native.list_head;
+  tail = __native.list_tail;
+}
