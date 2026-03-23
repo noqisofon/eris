@@ -51,6 +51,8 @@ pub fn build_native_env() -> Value {
     stdlib_cache.insert("attr".to_string(), preload_module("attr", include_str!("attr.eris")).unwrap());
     stdlib_cache.insert("fs".to_string(), preload_module("fs", include_str!("fs.eris")).unwrap());
     stdlib_cache.insert("json".to_string(), preload_module("json", include_str!("json.eris")).unwrap());
+    stdlib_cache.insert("path".to_string(), preload_module("path", include_str!("path.eris")).unwrap());
+    stdlib_cache.insert("child_process".to_string(), preload_module("child_process", include_str!("child_process.eris")).unwrap());
 
     map.insert(
         "import".to_string(),
@@ -458,6 +460,101 @@ pub fn build_native_env() -> Value {
             }
         }
         json_to_val(j)
+    })));
+
+    // -- path --
+    map.insert("path_join".to_string(), Thunk::evaluated(native_fn(|p1_val| {
+        Ok(native_fn(move |p2_val| {
+            let p1 = match &p1_val {
+                Value::String(s) => s.clone(),
+                Value::Path(p) => p.clone(),
+                _ => return Err("path.join expects strings/paths".into()),
+            };
+            let p2 = match &p2_val {
+                Value::String(s) => s.clone(),
+                Value::Path(p) => p.clone(),
+                _ => return Err("path.join expects strings/paths".into()),
+            };
+            let mut path = std::path::PathBuf::from(p1);
+            path.push(p2);
+            Ok(Value::String(path.to_string_lossy().into_owned()))
+        }))
+    })));
+    map.insert("path_dirname".to_string(), Thunk::evaluated(native_fn(|p_val| {
+        let p = match p_val {
+            Value::String(s) => s,
+            Value::Path(p) => p,
+            _ => return Err("path.dirname expects a string/path".into()),
+        };
+        let path = std::path::Path::new(&p);
+        if let Some(parent) = path.parent() {
+            Ok(Value::String(parent.to_string_lossy().into_owned()))
+        } else {
+            Ok(Value::String("".to_string()))
+        }
+    })));
+    map.insert("path_basename".to_string(), Thunk::evaluated(native_fn(|p_val| {
+        let p = match p_val {
+            Value::String(s) => s,
+            Value::Path(p) => p,
+            _ => return Err("path.basename expects a string/path".into()),
+        };
+        let path = std::path::Path::new(&p);
+        if let Some(file_name) = path.file_name() {
+            Ok(Value::String(file_name.to_string_lossy().into_owned()))
+        } else {
+            Ok(Value::String("".to_string()))
+        }
+    })));
+    map.insert("path_extname".to_string(), Thunk::evaluated(native_fn(|p_val| {
+        let p = match p_val {
+            Value::String(s) => s,
+            Value::Path(p) => p,
+            _ => return Err("path.extname expects a string/path".into()),
+        };
+        let path = std::path::Path::new(&p);
+        if let Some(ext) = path.extension() {
+            Ok(Value::String(format!(".{}", ext.to_string_lossy())))
+        } else {
+            Ok(Value::String("".to_string()))
+        }
+    })));
+
+    // -- child_process --
+    map.insert("child_process_exec".to_string(), Thunk::evaluated(native_fn(|cmd_val| {
+        Ok(native_fn(move |args_val| {
+            let cmd = match &cmd_val {
+                Value::String(s) => s.clone(),
+                _ => return Err("child_process.exec expects a string command".into()),
+            };
+            let args = match &args_val {
+                Value::List(l) => {
+                    let mut a = Vec::new();
+                    for t in l {
+                        match evaluate(t.clone())? {
+                            Value::String(s) => a.push(s),
+                            _ => return Err("child_process.exec args must be strings".into()),
+                        }
+                    }
+                    a
+                }
+                _ => return Err("child_process.exec expects a list of arguments".into()),
+            };
+
+            let output = std::process::Command::new(cmd)
+                .args(args)
+                .output()
+                .map_err(|e| format!("Failed to execute command: {}", e))?;
+
+            let mut res_map = HashMap::new();
+            res_map.insert("status".to_string(), Thunk::evaluated(Value::Int(output.status.code().unwrap_or(-1) as i64)));
+            let stdout_str = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr_str = String::from_utf8_lossy(&output.stderr).into_owned();
+            res_map.insert("stdout".to_string(), Thunk::evaluated(Value::String(stdout_str)));
+            res_map.insert("stderr".to_string(), Thunk::evaluated(Value::String(stderr_str)));
+
+            Ok(Value::AttrSet(res_map))
+        }))
     })));
 
     let native_val = Value::AttrSet(map);

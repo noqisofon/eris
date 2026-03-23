@@ -1,0 +1,7 @@
+# path.eris
+{ __native } -> rec {
+  join = |p1, p2| -> __native.path_join p1 p2;
+  dirname = |p| -> __native.path_dirname p;
+  basename = |p| -> __native.path_basename p;
+  extname = |p| -> __native.path_extname p;
+}

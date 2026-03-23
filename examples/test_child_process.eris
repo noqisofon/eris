@@ -1,0 +1,5 @@
+{ builtin } ->
+let cp = builtin.import "child_process";
+    fmt = builtin.import "fmt";
+in let res = cp.exec "cmd" [ "/C" "echo hello world" ];
+in fmt.println res.stdout

@@ -1,0 +1,4 @@
+# child_process.eris
+{ __native } -> rec {
+  exec = |cmd, args| -> __native.child_process_exec cmd args;
+}

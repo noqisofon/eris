@@ -1,0 +1,8 @@
+{ builtin } ->
+let path = builtin.import "path";
+    fmt = builtin.import "fmt";
+in let _ = fmt.println (path.join "foo" "bar");
+in let _ = fmt.println (path.dirname "foo/bar/baz.txt");
+in let _ = fmt.println (path.basename "foo/bar/baz.txt");
+in let _ = fmt.println (path.extname "foo/bar/baz.txt");
+in "DONE"
