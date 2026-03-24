@@ -78,7 +78,10 @@ fn run_interpreter() {
         }
     };
 
-    let env = Env::new();
+    let env = Env::new(
+        std::rc::Rc::new(source.clone()),
+        std::rc::Rc::new(filename.to_string()),
+    );
     let thunk = Thunk::new(expr, env);
     let mut result_val = evaluate(thunk).unwrap_or_else(|e| {
         eprintln!("Runtime error: {}", e);
@@ -127,7 +130,10 @@ fn run_interpreter() {
             std::process::exit(1);
         });
 
-        let builtin_env = Env::new();
+        let builtin_env = Env::new(
+            std::rc::Rc::new(builtin_source.to_string()),
+            std::rc::Rc::new("builtin.eris".to_string()),
+        );
         let builtin_thunk = Thunk::new(builtin_parse, builtin_env);
         let builtin_closure = evaluate(builtin_thunk).unwrap_or_else(|e| {
             eprintln!("Runtime error evaluating builtin.eris: {}", e);
@@ -222,7 +228,10 @@ mod tests {
             }
         }
         let ast = opt_ast.unwrap();
-        let env = Env::new();
+        let env = Env::new(
+            std::rc::Rc::new(source.to_string()),
+            std::rc::Rc::new("test".to_string()),
+        );
         let thunk = Thunk::new(ast, env);
         let val = deep_force(evaluate(thunk).unwrap()).unwrap();
         format!("{:?}", val)

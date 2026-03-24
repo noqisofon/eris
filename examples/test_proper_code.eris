@@ -1,0 +1,6 @@
+# builtins は必須。(名前は std でも何でも良いのだが…)
+{ builtins } ->
+  let
+    fmt = builtins.import 'fmt';  # 'gmt' じゃなくて、'fmt'。(モジュールの名前が間違い)
+  in
+    fmt.println 'Correct code'    # `puts` ではなく `println`。(関数名も間違い)

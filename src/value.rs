@@ -16,6 +16,7 @@ pub enum Value {
     AttrSet(HashMap<String, Thunk>),
     Closure { args: Args, body: Expr, env: Env },
     NativeClosure(Rc<dyn Fn(Value) -> Result<Value, String>>),
+    Poison,
 }
 
 impl fmt::Debug for Value {
@@ -42,6 +43,7 @@ impl fmt::Debug for Value {
             }
             Value::Closure { .. } => write!(f, "<closure>"),
             Value::NativeClosure(_) => write!(f, "<builtin>"),
+            Value::Poison => write!(f, "<poison>"),
         }
     }
 }
@@ -80,14 +82,18 @@ pub struct Env {
     pub bindings: Rc<RefCell<HashMap<String, Thunk>>>,
     pub with_context: Option<Thunk>,
     pub parent: Option<Rc<Env>>,
+    pub source: Rc<String>,
+    pub filename: Rc<String>,
 }
 
 impl Env {
-    pub fn new() -> Self {
+    pub fn new(source: Rc<String>, filename: Rc<String>) -> Self {
         Env {
             bindings: Rc::new(RefCell::new(HashMap::new())),
             with_context: None,
             parent: None,
+            source,
+            filename,
         }
     }
 
@@ -96,6 +102,8 @@ impl Env {
             bindings: Rc::new(RefCell::new(HashMap::new())),
             with_context: None,
             parent: Some(Rc::new(self.clone())),
+            source: self.source.clone(),
+            filename: self.filename.clone(),
         }
     }
 
@@ -104,6 +112,8 @@ impl Env {
             bindings: Rc::new(RefCell::new(HashMap::new())),
             with_context: Some(thunk),
             parent: Some(Rc::new(self.clone())),
+            source: self.source.clone(),
+            filename: self.filename.clone(),
         }
     }
 

@@ -1,6 +1,67 @@
 use crate::ast::*;
 use crate::value::*;
+use ariadne::{Color, Label, Report, ReportKind, Source};
 use std::collections::HashMap;
+
+fn report_error(env: &Env, span: std::ops::Range<usize>, msg: &str, hint: Option<&str>) {
+    let mut builder = Report::build(ReportKind::Error, (env.filename.to_string(), span.clone()))
+        .with_message(msg)
+        .with_label(
+            Label::new((env.filename.to_string(), span.clone()))
+                .with_message(msg)
+                .with_color(Color::Red),
+        );
+
+    if let Some(hint_msg) = hint {
+        builder = builder.with_label(
+            Label::new((env.filename.to_string(), span))
+                .with_message(format!("did you mean '{}'?", hint_msg))
+                .with_color(Color::Yellow),
+        );
+    }
+
+    builder
+        .finish()
+        .eprint((env.filename.to_string(), Source::from(env.source.as_str())))
+        .unwrap();
+}
+
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let len_a = a.chars().count();
+    let len_b = b.chars().count();
+    let mut matrix = vec![vec![0; len_b + 1]; len_a + 1];
+    for i in 0..=len_a {
+        matrix[i][0] = i;
+    }
+    for j in 0..=len_b {
+        matrix[0][j] = j;
+    }
+    for (i, ca) in a.chars().enumerate() {
+        for (j, cb) in b.chars().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            matrix[i + 1][j + 1] = (matrix[i][j + 1] + 1)
+                .min(matrix[i + 1][j] + 1)
+                .min(matrix[i][j] + cost);
+        }
+    }
+    matrix[len_a][len_b]
+}
+
+fn did_you_mean<'a>(
+    target: &str,
+    candidates: impl Iterator<Item = &'a String>,
+) -> Option<&'a String> {
+    let mut best = None;
+    let mut best_dist = usize::MAX;
+    for cand in candidates {
+        let dist = levenshtein_distance(target, cand);
+        if dist <= 3 && dist < best_dist {
+            best_dist = dist;
+            best = Some(cand);
+        }
+    }
+    best
+}
 
 pub fn evaluate(thunk: Thunk) -> Result<Value, String> {
     let state = {
@@ -23,51 +84,76 @@ pub fn evaluate(thunk: Thunk) -> Result<Value, String> {
 }
 
 pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
-    match expr {
-        Expr::Bool(b) => Ok(Value::Bool(*b)),
-        Expr::IfElse(cond, true_branch, false_branch) => {
+    match &expr.kind {
+        ExprKind::Bool(b) => Ok(Value::Bool(*b)),
+        ExprKind::IfElse(cond, true_branch, false_branch) => {
             let cond_val = eval_expr(cond, env)?;
+            if let Value::Poison = cond_val {
+                return Ok(Value::Poison);
+            }
             match cond_val {
                 Value::Bool(true) => eval_expr(true_branch, env),
                 Value::Bool(false) => eval_expr(false_branch, env),
-                _ => Err(format!(
-                    "Condition in if expression must be a boolean, got {:?}",
-                    cond_val
-                )),
+                _ => {
+                    report_error(
+                        env,
+                        cond.span.clone(),
+                        &format!(
+                            "Condition in if expression must be a boolean, got {:?}",
+                            cond_val
+                        ),
+                        None,
+                    );
+                    Ok(Value::Poison)
+                }
             }
         }
-        Expr::Int(i) => Ok(Value::Int(*i)),
-        Expr::Float(f) => Ok(Value::Float(*f)),
-        Expr::String(parts) => {
+        ExprKind::Int(i) => Ok(Value::Int(*i)),
+        ExprKind::Float(f) => Ok(Value::Float(*f)),
+        ExprKind::String(parts) => {
             let mut result = String::new();
             for part in parts {
                 match part {
                     StringPart::Literal(s) => result.push_str(s),
                     StringPart::Interpolation(ident) => {
-                        let thunk = env
-                            .get(ident)
-                            .ok_or_else(|| format!("Variable '{}' not found", ident))?;
+                        let thunk = env.get(ident).unwrap_or_else(|| {
+                            // Fallback for interpolation identifier missing
+                            Thunk::evaluated(Value::Poison)
+                        });
+
                         let val = evaluate(thunk)?;
+                        if let Value::Poison = val {
+                            // If it's poison, interpolation fails, just return Poison
+                            return Ok(Value::Poison);
+                        }
                         match val {
                             Value::Int(i) => result.push_str(&i.to_string()),
                             Value::Float(f) => result.push_str(&f.to_string()),
                             Value::String(s) => result.push_str(&s),
-                            _ => return Err(format!("Cannot interpolate {:?}", val)),
+                            _ => {
+                                report_error(
+                                    env,
+                                    expr.span.clone(),
+                                    &format!("Cannot interpolate {:?}", val),
+                                    None,
+                                );
+                                return Ok(Value::Poison);
+                            }
                         }
                     }
                 }
             }
             Ok(Value::String(result))
         }
-        Expr::Path(p) => Ok(Value::Path(p.clone())),
-        Expr::List(exprs) => {
+        ExprKind::Path(p) => Ok(Value::Path(p.clone())),
+        ExprKind::List(exprs) => {
             let thunks = exprs
                 .iter()
                 .map(|e| Thunk::new(e.clone(), env.clone()))
                 .collect();
             Ok(Value::List(thunks))
         }
-        Expr::AttrSet { is_rec, attrs } => {
+        ExprKind::AttrSet { is_rec, attrs } => {
             let mut map = HashMap::new();
             let new_env = if *is_rec { env.extend() } else { env.clone() };
 
@@ -80,43 +166,76 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
             }
             Ok(Value::AttrSet(map))
         }
-        Expr::Ident(name) => {
-            let thunk = env
-                .get(name)
-                .ok_or_else(|| format!("Variable '{}' not found", name))?;
-            evaluate(thunk)
+        ExprKind::Ident(name) => {
+            if let Some(thunk) = env.get(name) {
+                evaluate(thunk)
+            } else {
+                let bindings = env.bindings.borrow();
+                let candidates: Vec<String> = bindings
+                    .keys()
+                    .cloned()
+                    .chain(std::iter::once("builtins".to_string()))
+                    .collect();
+                let hint = did_you_mean(name, candidates.iter());
+                report_error(
+                    env,
+                    expr.span.clone(),
+                    &format!("Variable '{}' not found", name),
+                    hint.map(|s| s.as_str()),
+                );
+                Ok(Value::Poison)
+            }
         }
-        Expr::FieldAccess(lhs, fields) => {
+        ExprKind::FieldAccess(lhs, fields) => {
             let mut current = eval_expr(lhs, env)?;
             for field in fields {
+                if let Value::Poison = current {
+                    return Ok(Value::Poison);
+                }
                 match current {
                     Value::AttrSet(mut map) => {
-                        let thunk = map.remove(field).ok_or_else(|| {
-                            format!("Field '{}' not found in attribute set", field)
-                        })?;
+                        let thunk = if let Some(t) = map.remove(field) {
+                            t
+                        } else {
+                            let keys: Vec<String> = map.keys().cloned().collect();
+                            let hint = did_you_mean(field, keys.iter());
+                            report_error(
+                                env,
+                                expr.span.clone(),
+                                &format!("Field '{}' not found in attribute set", field),
+                                hint.map(|s| s.as_str()),
+                            );
+                            Thunk::evaluated(Value::Poison)
+                        };
                         current = evaluate(thunk)?;
                     }
                     _ => {
-                        return Err(format!(
-                            "Cannot access field '{}' on non-attribute set {:?}",
-                            field, current
-                        ));
+                        report_error(
+                            env,
+                            expr.span.clone(),
+                            &format!(
+                                "Cannot access field '{}' on non-attribute set {:?}",
+                                field, current
+                            ),
+                            None,
+                        );
+                        return Ok(Value::Poison);
                     }
                 }
             }
             Ok(current)
         }
-        Expr::Lambda(args, body) => Ok(Value::Closure {
+        ExprKind::Lambda(args, body) => Ok(Value::Closure {
             args: args.clone(),
             body: *body.clone(),
             env: env.clone(),
         }),
-        Expr::With(obj, body) => {
+        ExprKind::With(obj, body) => {
             let obj_thunk = Thunk::new(*obj.clone(), env.clone());
             let new_env = env.with_context(obj_thunk);
             eval_expr(body, &new_env)
         }
-        Expr::ImplicitAccess(fields) => {
+        ExprKind::ImplicitAccess(fields) => {
             let mut current_env = Some(env.clone());
             let mut found_with = None;
             while let Some(e) = current_env {
@@ -126,34 +245,66 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                 }
                 current_env = e.parent.as_deref().cloned();
             }
-            let ctx_thunk = found_with
-                .ok_or_else(|| "Implicit field access outside of 'with' block".to_string())?;
+            let ctx_thunk = found_with.unwrap_or_else(|| {
+                report_error(
+                    env,
+                    expr.span.clone(),
+                    "Implicit field access outside of 'with' block",
+                    None,
+                );
+                Thunk::evaluated(Value::Poison)
+            });
             let mut current = evaluate(ctx_thunk)?;
             for field in fields {
+                if let Value::Poison = current {
+                    return Ok(Value::Poison);
+                }
                 match current {
                     Value::AttrSet(mut map) => {
-                        let thunk = map.remove(field).ok_or_else(|| {
-                            format!("Field '{}' not found in attribute set", field)
-                        })?;
+                        let thunk = if let Some(t) = map.remove(field) {
+                            t
+                        } else {
+                            let keys: Vec<String> = map.keys().cloned().collect();
+                            let hint = did_you_mean(field, keys.iter());
+                            report_error(
+                                env,
+                                expr.span.clone(),
+                                &format!("Field '{}' not found in attribute set", field),
+                                hint.map(|s| s.as_str()),
+                            );
+                            Thunk::evaluated(Value::Poison)
+                        };
                         current = evaluate(thunk)?;
                     }
                     _ => {
-                        return Err(format!(
-                            "Cannot access field '{}' on non-attribute set {:?}",
-                            field, current
-                        ));
+                        report_error(
+                            env,
+                            expr.span.clone(),
+                            &format!(
+                                "Cannot access field '{}' on non-attribute set {:?}",
+                                field, current
+                            ),
+                            None,
+                        );
+                        return Ok(Value::Poison);
                     }
                 }
             }
             Ok(current)
         }
-        Expr::App(f, arg) => {
+        ExprKind::App(f, arg) => {
             let func_val = eval_expr(f, env)?;
+            if let Value::Poison = func_val {
+                return Ok(Value::Poison);
+            }
             let arg_thunk = Thunk::new(*arg.clone(), env.clone());
 
             match func_val {
                 Value::NativeClosure(f) => {
                     let arg_val = evaluate(arg_thunk)?;
+                    if let Value::Poison = arg_val {
+                        return Ok(Value::Poison);
+                    }
                     f(arg_val)
                 }
                 Value::Closure {
@@ -179,38 +330,57 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                         }
                         Args::Destructure { names, ignore_rest } => {
                             let arg_val = evaluate(arg_thunk)?;
+                            if let Value::Poison = arg_val {
+                                return Ok(Value::Poison);
+                            }
                             match arg_val {
                                 Value::AttrSet(mut map) => {
                                     for name in names {
-                                        let val_thunk = map.remove(&name).ok_or_else(|| {
-                                            format!(
-                                                "Missing required attribute '{}' in destructuring",
-                                                name
-                                            )
-                                        })?;
+                                        let val_thunk = map.remove(&name).unwrap_or_else(|| {
+                                            report_error(env, expr.span.clone(), &format!("Missing required attribute '{}' in destructuring", name), None);
+                                            Thunk::evaluated(Value::Poison)
+                                        });
                                         call_env.define(name, val_thunk);
                                     }
                                     if !ignore_rest && !map.is_empty() {
-                                        return Err(format!(
-                                            "Unexpected attributes in destructuring: {:?}",
-                                            map.keys()
-                                        ));
+                                        report_error(
+                                            env,
+                                            expr.span.clone(),
+                                            &format!(
+                                                "Unexpected attributes in destructuring: {:?}",
+                                                map.keys()
+                                            ),
+                                            None,
+                                        );
+                                        return Ok(Value::Poison);
                                     }
                                 }
                                 _ => {
-                                    return Err(
-                                        "Expected an attribute set for destructuring".into()
+                                    report_error(
+                                        env,
+                                        expr.span.clone(),
+                                        "Expected an attribute set for destructuring",
+                                        None,
                                     );
+                                    return Ok(Value::Poison);
                                 }
                             }
                             eval_expr(&body, &call_env)
                         }
                     }
                 }
-                _ => return Err(format!("Not a function: {:?}", func_val)),
+                _ => {
+                    report_error(
+                        env,
+                        expr.span.clone(),
+                        &format!("Not a function: {:?}", func_val),
+                        None,
+                    );
+                    Ok(Value::Poison)
+                }
             }
         }
-        Expr::LetIn(bindings, body) => {
+        ExprKind::LetIn(bindings, body) => {
             let new_env = env.extend();
             for (k, v) in bindings {
                 let thunk = Thunk::new(v.clone(), new_env.clone());
@@ -218,39 +388,64 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
             }
             eval_expr(body, &new_env)
         }
-        Expr::BinOp(lhs, op, rhs) => {
+        ExprKind::BinOp(lhs, op, rhs) => {
             if *op == Op::And {
                 let left = eval_expr(lhs, env)?;
+                if let Value::Poison = left {
+                    return Ok(Value::Poison);
+                }
                 if let Value::Bool(false) = left {
                     return Ok(Value::Bool(false));
                 }
                 let right = eval_expr(rhs, env)?;
+                if let Value::Poison = right {
+                    return Ok(Value::Poison);
+                }
                 return match (left, right) {
                     (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a && b)),
-                    _ => Err("Invalid types for &&".into()),
+                    _ => {
+                        report_error(env, expr.span.clone(), "Invalid types for &&", None);
+                        Ok(Value::Poison)
+                    }
                 };
             }
             if *op == Op::Or {
                 let left = eval_expr(lhs, env)?;
+                if let Value::Poison = left {
+                    return Ok(Value::Poison);
+                }
                 if let Value::Bool(true) = left {
                     return Ok(Value::Bool(true));
                 }
                 let right = eval_expr(rhs, env)?;
+                if let Value::Poison = right {
+                    return Ok(Value::Poison);
+                }
                 return match (left, right) {
                     (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a || b)),
-                    _ => Err("Invalid types for ||".into()),
+                    _ => {
+                        report_error(env, expr.span.clone(), "Invalid types for ||", None);
+                        Ok(Value::Poison)
+                    }
                 };
             }
 
             let left = eval_expr(lhs, env)?;
+            if let Value::Poison = left {
+                return Ok(Value::Poison);
+            }
             let right = eval_expr(rhs, env)?;
+            if let Value::Poison = right {
+                return Ok(Value::Poison);
+            }
             match (left, op, right) {
                 (Value::Int(a), Op::Add, Value::Int(b)) => Ok(Value::Int(a + b)),
                 (Value::Int(a), Op::Sub, Value::Int(b)) => Ok(Value::Int(a - b)),
                 (Value::Int(a), Op::Mul, Value::Int(b)) => Ok(Value::Int(a * b)),
                 (Value::Int(a), Op::Div, Value::Int(b)) => {
                     if b == 0 {
-                        Err("Division by zero".into())
+                        report_error(env, expr.span.clone(), "Division by zero", None);
+                        Ok(Value::Poison)
                     } else {
                         Ok(Value::Int(a / b))
                     }
@@ -288,7 +483,15 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                 (Value::Bool(a), Op::Eq, Value::Bool(b)) => Ok(Value::Bool(a == b)),
                 (Value::Bool(a), Op::Neq, Value::Bool(b)) => Ok(Value::Bool(a != b)),
 
-                _ => Err("Invalid types for binary operation".into()),
+                _ => {
+                    report_error(
+                        env,
+                        expr.span.clone(),
+                        "Invalid types for binary operation",
+                        None,
+                    );
+                    Ok(Value::Poison)
+                }
             }
         }
     }

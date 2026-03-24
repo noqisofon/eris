@@ -1,0 +1,5 @@
+{} -> 
+  let
+    gmt = builtins.import 'gmt';  
+  in
+    gmt.puts "That's ridiculous!"

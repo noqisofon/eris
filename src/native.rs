@@ -113,7 +113,10 @@ pub fn build_native_env() -> Value {
         }
 
         let expr = opt_ast.ok_or_else(|| format!("Parse error in module {}", name))?;
-        let env = Env::new();
+        let env = Env::new(
+            std::rc::Rc::new(source.to_string()),
+            std::rc::Rc::new(name.to_string()),
+        );
         let thunk = Thunk::new(expr, env);
         Ok(evaluate(thunk)?)
     };
@@ -199,7 +202,10 @@ pub fn build_native_env() -> Value {
                 let expr =
                     opt_ast.ok_or_else(|| format!("Parse error in module {}", module_name))?;
 
-                let env = Env::new();
+                let env = Env::new(
+                    std::rc::Rc::new(source.to_string()),
+                    std::rc::Rc::new(module_name.to_string()),
+                );
                 let thunk = Thunk::new(expr, env);
                 evaluate(thunk)?
             };
