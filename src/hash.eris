@@ -1,0 +1,7 @@
+# hash.eris
+{ __native } -> rec {
+  sha256  = __native.hash_sha256;
+  sha512  = __native.hash_sha512;
+  blake3  = __native.hash_blake3;
+  content = __native.hash_blake3;
+}

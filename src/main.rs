@@ -1,8 +1,8 @@
 pub mod ast;
 pub mod eval;
+pub mod native;
 pub mod parser;
 pub mod value;
-pub mod native;
 
 use crate::eval::evaluate;
 use crate::parser::parser;
@@ -45,7 +45,7 @@ fn run_interpreter() {
     });
 
     let parse_result = parser().then_ignore(chumsky::prelude::end()).parse(&source);
-    
+
     let expr = match parse_result.into_output() {
         Some(ast) => ast,
         None => {
@@ -72,13 +72,15 @@ fn run_interpreter() {
 
         // Evaluate builtin.eris script using include_str!
         let builtin_source = include_str!("builtin.eris");
-        let builtin_parse = parser().then_ignore(chumsky::prelude::end()).parse(builtin_source)
+        let builtin_parse = parser()
+            .then_ignore(chumsky::prelude::end())
+            .parse(builtin_source)
             .into_output()
             .unwrap_or_else(|| {
                 eprintln!("Parse error in builtin.eris");
                 std::process::exit(1);
             });
-        
+
         let builtin_env = Env::new();
         let builtin_thunk = Thunk::new(builtin_parse, builtin_env);
         let builtin_closure = evaluate(builtin_thunk).unwrap_or_else(|e| {
@@ -87,9 +89,12 @@ fn run_interpreter() {
         });
 
         // Pass { __native } to builtin_closure to get the `builtin` module
-        let builtin_val = if let Value::Closure { 
-            args: b_args, body: b_body, env: b_env 
-        } = builtin_closure {
+        let builtin_val = if let Value::Closure {
+            args: b_args,
+            body: b_body,
+            env: b_env,
+        } = builtin_closure
+        {
             let call_env = b_env.extend();
             if let crate::ast::Args::Destructure { names, .. } = b_args {
                 for name in names {
@@ -263,6 +268,9 @@ mod tests {
     fn test_if_else() {
         assert_eq!(eval_code("if true then 1 else 2"), "1");
         assert_eq!(eval_code("if false then 1 else 2"), "2");
-        assert_eq!(eval_code("if 10 > 5 && true then \"yes\" else \"no\""), "\"yes\"");
+        assert_eq!(
+            eval_code("if 10 > 5 && true then \"yes\" else \"no\""),
+            "\"yes\""
+        );
     }
 }

@@ -1,0 +1,28 @@
+{ builtin } ->
+  let
+    fmt  = builtin.import "fmt";
+    hash = builtin.import "hash";
+    string = builtin.import "string";
+
+    vessa1 = { name = "vessa"; version = "1.0.0"; details = { type = "friend"; id = 42; }; };
+    vessa2 = { details = { id = 42; type = "friend"; }; version = "1.0.0"; name = "vessa"; };
+    
+    sha1 = hash.sha256 vessa1;
+    sha2 = hash.sha256 vessa2;
+    blake1 = hash.blake3 vessa1;
+    content1 = hash.content vessa1;
+
+    s_42 = "42";
+    i_42 = 42;
+    
+    check1 = if sha1 == sha2 then "Pass" else "Fail1";
+    check2 = if (hash.sha256 s_42) != (hash.sha256 i_42) then "Pass" else "Fail2";
+    check3 = if blake1 == content1 then "Pass" else "Fail3";
+  in
+    [
+      (fmt.println check1)
+      (fmt.println check2)
+      (fmt.println check3)
+      (fmt.println (string.concat "sha256: " sha1))
+      (fmt.println (string.concat "blake3: " blake1))
+    ]

@@ -8,8 +8,14 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
         .padded();
 
     recursive(|expr| {
-        let ident = any().filter(|c: &char| c.is_alphabetic() || *c == '_')
-            .then(any().filter(|c: &char| c.is_alphanumeric() || *c == '_' || *c == '-').repeated().collect::<String>())
+        let ident = any()
+            .filter(|c: &char| c.is_alphabetic() || *c == '_')
+            .then(
+                any()
+                    .filter(|c: &char| c.is_alphanumeric() || *c == '_' || *c == '-')
+                    .repeated()
+                    .collect::<String>(),
+            )
             .map(|(first, rest)| format!("{}{}", first, rest))
             .filter(|s: &String| {
                 !matches!(
@@ -157,8 +163,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                 with_expr,
                 if_expr,
                 ident.clone().map(Expr::Ident),
-                expr.clone()
-                    .delimited_by(just('(').padded(), just(')')),
+                expr.clone().delimited_by(just('(').padded(), just(')')),
             )))
         });
 
