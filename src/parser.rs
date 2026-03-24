@@ -165,6 +165,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                 ident.clone().map(Expr::Ident),
                 expr.clone().delimited_by(just('(').padded(), just(')')),
             )))
+            .labelled("expression")
         });
 
         let implicit_access = just('.')
@@ -324,7 +325,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                 })
             });
 
-        lambda.or(logical_or).padded()
+        lambda.or(logical_or).padded().labelled("expression")
     })
     .padded_by(comment.repeated())
 }
