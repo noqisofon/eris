@@ -44,12 +44,36 @@ fn run_interpreter() {
         std::process::exit(1);
     });
 
-    let parse_result = parser().then_ignore(chumsky::prelude::end()).parse(&source);
+    let (opt_ast, errs) = parser()
+        .then_ignore(chumsky::prelude::end())
+        .parse(&source)
+        .into_output_errors();
 
-    let expr = match parse_result.into_output() {
+    if !errs.is_empty() {
+        use ariadne::{Color, Label, Report, ReportKind, Source};
+        for err in errs {
+            Report::build(
+                ReportKind::Error,
+                (
+                    filename.clone(),
+                    err.span().into_range().start..err.span().into_range().start,
+                ),
+            )
+            .with_message(err.to_string())
+            .with_label(
+                Label::new((filename.clone(), err.span().into_range()))
+                    .with_message(err.reason().to_string())
+                    .with_color(Color::Red),
+            )
+            .finish()
+            .eprint((filename.clone(), Source::from(&source)))
+            .unwrap();
+        }
+    }
+
+    let expr = match opt_ast {
         Some(ast) => ast,
         None => {
-            eprintln!("Parse error failed completely.");
             std::process::exit(1);
         }
     };
@@ -72,14 +96,36 @@ fn run_interpreter() {
 
         // Evaluate builtin.eris script using include_str!
         let builtin_source = include_str!("builtin.eris");
-        let builtin_parse = parser()
+        let (builtin_opt, builtin_errs) = parser()
             .then_ignore(chumsky::prelude::end())
             .parse(builtin_source)
-            .into_output()
-            .unwrap_or_else(|| {
-                eprintln!("Parse error in builtin.eris");
-                std::process::exit(1);
-            });
+            .into_output_errors();
+
+        if !builtin_errs.is_empty() {
+            use ariadne::{Color, Label, Report, ReportKind, Source};
+            for err in builtin_errs {
+                Report::build(
+                    ReportKind::Error,
+                    (
+                        "builtin.eris",
+                        err.span().into_range().start..err.span().into_range().start,
+                    ),
+                )
+                .with_message(err.to_string())
+                .with_label(
+                    Label::new(("builtin.eris", err.span().into_range()))
+                        .with_message(err.reason().to_string())
+                        .with_color(Color::Red),
+                )
+                .finish()
+                .eprint(("builtin.eris", Source::from(builtin_source)))
+                .unwrap();
+            }
+        }
+
+        let builtin_parse = builtin_opt.unwrap_or_else(|| {
+            std::process::exit(1);
+        });
 
         let builtin_env = Env::new();
         let builtin_thunk = Thunk::new(builtin_parse, builtin_env);
@@ -150,8 +196,32 @@ mod tests {
     use super::*;
 
     fn eval_code(source: &str) -> String {
-        let parse_result = parser().then_ignore(chumsky::prelude::end()).parse(source);
-        let ast = parse_result.into_output().unwrap();
+        let (opt_ast, errs) = parser()
+            .then_ignore(chumsky::prelude::end())
+            .parse(source)
+            .into_output_errors();
+        if !errs.is_empty() {
+            use ariadne::{Color, Label, Report, ReportKind, Source};
+            for err in errs {
+                Report::build(
+                    ReportKind::Error,
+                    (
+                        "test",
+                        err.span().into_range().start..err.span().into_range().start,
+                    ),
+                )
+                .with_message(err.to_string())
+                .with_label(
+                    Label::new(("test", err.span().into_range()))
+                        .with_message(err.reason().to_string())
+                        .with_color(Color::Red),
+                )
+                .finish()
+                .eprint(("test", Source::from(source)))
+                .unwrap();
+            }
+        }
+        let ast = opt_ast.unwrap();
         let env = Env::new();
         let thunk = Thunk::new(ast, env);
         let val = deep_force(evaluate(thunk).unwrap()).unwrap();

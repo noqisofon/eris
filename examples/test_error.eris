@@ -1,0 +1,7 @@
+{ builtin } ->
+  let
+    fmt = builtin.import "fmt";
+    # Deliberate syntax error: missing ; at the end of let binding
+    foo = 42
+  in
+    fmt.println foo

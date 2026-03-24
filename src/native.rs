@@ -85,12 +85,34 @@ pub fn build_native_env() -> Value {
     let mut stdlib_cache = HashMap::new();
 
     let preload_module = |name: &str, source: &str| -> Result<Value, String> {
-        let parse_result = crate::parser::parser()
+        let (opt_ast, errs) = crate::parser::parser()
             .then_ignore(chumsky::prelude::end())
-            .parse(source);
-        let expr = parse_result
-            .into_output()
-            .ok_or_else(|| format!("Parse error in module {}", name))?;
+            .parse(source)
+            .into_output_errors();
+
+        if !errs.is_empty() {
+            use ariadne::{Color, Label, Report, ReportKind, Source};
+            for err in errs {
+                Report::build(
+                    ReportKind::Error,
+                    (
+                        name.to_string(),
+                        err.span().into_range().start..err.span().into_range().start,
+                    ),
+                )
+                .with_message(err.to_string())
+                .with_label(
+                    Label::new((name.to_string(), err.span().into_range()))
+                        .with_message(err.reason().to_string())
+                        .with_color(Color::Red),
+                )
+                .finish()
+                .eprint((name.to_string(), Source::from(source)))
+                .unwrap();
+            }
+        }
+
+        let expr = opt_ast.ok_or_else(|| format!("Parse error in module {}", name))?;
         let env = Env::new();
         let thunk = Thunk::new(expr, env);
         Ok(evaluate(thunk)?)
@@ -147,12 +169,35 @@ pub fn build_native_env() -> Value {
                 let source = std::fs::read_to_string(&module_name)
                     .map_err(|e| format!("Error loading module {}: {}", module_name, e))?;
 
-                let parse_result = crate::parser::parser()
+                let (opt_ast, errs) = crate::parser::parser()
                     .then_ignore(chumsky::prelude::end())
-                    .parse(source.as_str());
-                let expr = parse_result
-                    .into_output()
-                    .ok_or_else(|| format!("Parse error in module {}", module_name))?;
+                    .parse(source.as_str())
+                    .into_output_errors();
+
+                if !errs.is_empty() {
+                    use ariadne::{Color, Label, Report, ReportKind, Source};
+                    for err in errs {
+                        Report::build(
+                            ReportKind::Error,
+                            (
+                                module_name.clone(),
+                                err.span().into_range().start..err.span().into_range().start,
+                            ),
+                        )
+                        .with_message(err.to_string())
+                        .with_label(
+                            Label::new((module_name.clone(), err.span().into_range()))
+                                .with_message(err.reason().to_string())
+                                .with_color(Color::Red),
+                        )
+                        .finish()
+                        .eprint((module_name.clone(), Source::from(&source)))
+                        .unwrap();
+                    }
+                }
+
+                let expr =
+                    opt_ast.ok_or_else(|| format!("Parse error in module {}", module_name))?;
 
                 let env = Env::new();
                 let thunk = Thunk::new(expr, env);
