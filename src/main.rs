@@ -159,6 +159,14 @@ mod tests {
         assert_eq!(eval_code("(1 + 2) * 3"), "9");
         assert_eq!(eval_code("10 / 2 - 1"), "4");
         assert_eq!(eval_code("1 + 4.5"), "5.5");
+        assert_eq!(eval_code("10 - 5"), "5");
+    }
+
+    #[test]
+    fn test_kebab_case() {
+        assert_eq!(eval_code("let write-file = 42; in write-file"), "42");
+        assert_eq!(eval_code("let my-var = { a-b = 10; }; in my-var.a-b"), "10");
+        assert_eq!(eval_code("let f = |x-y| -> x-y * 2; in f 5"), "10"); // using positional lambda
     }
 
     #[test]
