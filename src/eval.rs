@@ -54,6 +54,9 @@ fn did_you_mean<'a>(
     let mut best = None;
     let mut best_dist = usize::MAX;
     for cand in candidates {
+        if cand == target {
+            continue;
+        }
         let dist = levenshtein_distance(target, cand);
         if dist <= 3 && dist < best_dist {
             best_dist = dist;
