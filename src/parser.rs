@@ -1,7 +1,30 @@
 use crate::ast::*;
+use chumsky::input::MapExtra;
 use chumsky::prelude::*;
 
-pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src, char>>> {
+type PExtra<'src> = extra::Err<Rich<'src, char>>;
+
+fn mk_expr<'src, 'b>(kind: ExprKind, e: &mut MapExtra<'src, 'b, &'src str, PExtra<'src>>) -> Expr {
+    Expr { kind, span: e.span().into_range() }
+}
+
+fn mk_app<'src, 'b>((lhs, args): (Expr, Vec<Expr>), e: &mut MapExtra<'src, 'b, &'src str, PExtra<'src>>) -> Expr {
+    let span: Span = e.span().into_range();
+    args.into_iter().fold(lhs, |acc, arg| Expr {
+        kind: ExprKind::App(Box::new(acc), Box::new(arg)),
+        span: span.clone(),
+    })
+}
+
+fn mk_binop<'src, 'b>((lhs, rhs): (Expr, Vec<(Op, Expr)>), e: &mut MapExtra<'src, 'b, &'src str, PExtra<'src>>) -> Expr {
+    let span: Span = e.span().into_range();
+    rhs.into_iter().fold(lhs, |acc, (op, arg)| Expr {
+        kind: ExprKind::BinOp(Box::new(acc), op, Box::new(arg)),
+        span: span.clone(),
+    })
+}
+
+pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, PExtra<'src>> {
     let comment = text::inline_whitespace()
         .then(just('#'))
         .then(none_of('\n').repeated())
@@ -9,10 +32,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
 
     macro_rules! spanned {
         ($p:expr) => {
-            $p.map_with(|kind, e| Expr {
-                kind,
-                span: e.span().into_range(),
-            })
+            $p.map_with(mk_expr)
         };
     }
 
@@ -100,7 +120,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                 .map(ExprKind::Path)
         );
 
-        let atom = recursive(|atom| {
+        let atom = recursive(|atom: Recursive<dyn Parser<'src, &'src str, Expr, PExtra<'src>>>| {
             let field_access = spanned!(
                 atom.clone()
                     .then(
@@ -109,7 +129,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                             .repeated()
                             .collect::<Vec<_>>(),
                     )
-                    .map(|(lhs, fields)| {
+                    .map(|(lhs, fields): (Expr, Vec<String>)| {
                         if fields.is_empty() {
                             lhs.kind
                         } else {
@@ -222,7 +242,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                     .repeated()
                     .collect::<Vec<_>>(),
             )
-            .map(|(lhs, fields)| {
+            .map(|(lhs, fields): (Expr, Vec<String>)| {
                 if fields.is_empty() {
                     lhs.kind
                 } else {
@@ -237,12 +257,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
         let app = app_lhs
             .padded()
             .then(app_arg.padded().repeated().collect::<Vec<_>>())
-            .map_with(|(lhs, args), e| {
-                args.into_iter().fold(lhs, |acc, arg| Expr {
-                    kind: ExprKind::App(Box::new(acc), Box::new(arg)),
-                    span: e.span().into_range(),
-                })
-            });
+            .map_with(mk_app);
 
         let lambda_pos = ident_str
             .clone()
@@ -284,12 +299,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
         let product = app
             .clone()
             .then(op_mul_div.padded().then(app).repeated().collect::<Vec<_>>())
-            .map_with_span(|(lhs, rhs), span: SimpleSpan| {
-                rhs.into_iter().fold(lhs, |acc, (op, arg)| Expr {
-                    kind: ExprKind::BinOp(Box::new(acc), op, Box::new(arg)),
-                    span: span.into_range(),
-                })
-            });
+            .map_with(mk_binop);
 
         let op_add_sub = choice((just('+').to(Op::Add), just('-').to(Op::Sub)));
 
@@ -302,12 +312,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                     .repeated()
                     .collect::<Vec<_>>(),
             )
-            .map_with_span(|(lhs, rhs), span: SimpleSpan| {
-                rhs.into_iter().fold(lhs, |acc, (op, arg)| Expr {
-                    kind: ExprKind::BinOp(Box::new(acc), op, Box::new(arg)),
-                    span: span.into_range(),
-                })
-            });
+            .map_with(mk_binop);
 
         let comp_op = choice((
             just("==").to(Op::Eq),
@@ -327,12 +332,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                     .repeated()
                     .collect::<Vec<_>>(),
             )
-            .map_with_span(|(lhs, rhs), span: SimpleSpan| {
-                rhs.into_iter().fold(lhs, |acc, (op, arg)| Expr {
-                    kind: ExprKind::BinOp(Box::new(acc), op, Box::new(arg)),
-                    span: span.into_range(),
-                })
-            });
+            .map_with(mk_binop);
 
         let logical_and = comp
             .clone()
@@ -344,12 +344,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                     .repeated()
                     .collect::<Vec<_>>(),
             )
-            .map_with_span(|(lhs, rhs), span: SimpleSpan| {
-                rhs.into_iter().fold(lhs, |acc, (op, arg)| Expr {
-                    kind: ExprKind::BinOp(Box::new(acc), op, Box::new(arg)),
-                    span: span.into_range(),
-                })
-            });
+            .map_with(mk_binop);
 
         let logical_or = logical_and
             .clone()
@@ -361,12 +356,7 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, extra::Err<Rich<'src
                     .repeated()
                     .collect::<Vec<_>>(),
             )
-            .map_with_span(|(lhs, rhs), span: SimpleSpan| {
-                rhs.into_iter().fold(lhs, |acc, (op, arg)| Expr {
-                    kind: ExprKind::BinOp(Box::new(acc), op, Box::new(arg)),
-                    span: span.into_range(),
-                })
-            });
+            .map_with(mk_binop);
 
         lambda.or(logical_or).padded().labelled("expression")
     })
