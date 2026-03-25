@@ -1,4 +1,4 @@
-use crate::ast::Expr;
+use crate::ast::{Expr, ExprKind};
 use crate::eval::evaluate;
 use crate::value::{Env, Thunk, Value};
 use chumsky::Parser;
@@ -57,6 +57,9 @@ fn serialize_value(val: Value) -> Result<Vec<u8>, String> {
         }
         Value::Closure { .. } | Value::NativeClosure(_) => {
             return Err("unhashable type: Function".into());
+        }
+        Value::Poison => {
+            return Err("unhashable type: Poison".into());
         }
     }
     Ok(out)
@@ -308,14 +311,14 @@ pub fn build_native_env() -> Value {
                     let mut res = Vec::new();
                     for t in thunks {
                         let arg = evaluate(t)?;
-                        let apply_env = Env::new();
-                        // To apply `func` (which is a Value) to `arg` (which is a Value),
-                        // we can construct an App expr or manually evaluate if it's a closure.
-                        // Doing App expr is easiest:
-                        let app_expr = Expr::App(
-                            Box::new(Expr::Ident("f".to_string())),
-                            Box::new(Expr::Ident("x".to_string())),
-                        );
+                        let apply_env = Env::new(Rc::new(String::new()), Rc::new(String::new()));
+                        let app_expr = Expr {
+                            kind: ExprKind::App(
+                                Box::new(Expr { kind: ExprKind::Ident("f".to_string()), span: 0..0 }),
+                                Box::new(Expr { kind: ExprKind::Ident("x".to_string()), span: 0..0 }),
+                            ),
+                            span: 0..0,
+                        };
                         apply_env.define("f".to_string(), Thunk::evaluated(func.clone()));
                         apply_env.define("x".to_string(), Thunk::evaluated(arg));
                         let mapped = crate::eval::eval_expr(&app_expr, &apply_env)?;
@@ -336,11 +339,14 @@ pub fn build_native_env() -> Value {
                     let mut res = Vec::new();
                     for t in thunks {
                         let arg = evaluate(t.clone())?;
-                        let apply_env = Env::new();
-                        let app_expr = Expr::App(
-                            Box::new(Expr::Ident("f".to_string())),
-                            Box::new(Expr::Ident("x".to_string())),
-                        );
+                        let apply_env = Env::new(Rc::new(String::new()), Rc::new(String::new()));
+                        let app_expr = Expr {
+                            kind: ExprKind::App(
+                                Box::new(Expr { kind: ExprKind::Ident("f".to_string()), span: 0..0 }),
+                                Box::new(Expr { kind: ExprKind::Ident("x".to_string()), span: 0..0 }),
+                            ),
+                            span: 0..0,
+                        };
                         apply_env.define("f".to_string(), Thunk::evaluated(func.clone()));
                         apply_env.define("x".to_string(), Thunk::evaluated(arg));
                         let is_match = crate::eval::eval_expr(&app_expr, &apply_env)?;
@@ -365,13 +371,21 @@ pub fn build_native_env() -> Value {
                         let mut acc = init.clone();
                         for t in thunks {
                             let arg = evaluate(t)?;
-                            let apply_env = Env::new();
-                            let app1 = Expr::App(
-                                Box::new(Expr::Ident("f".to_string())),
-                                Box::new(Expr::Ident("acc".to_string())),
-                            );
-                            let app2 =
-                                Expr::App(Box::new(app1), Box::new(Expr::Ident("x".to_string())));
+                            let apply_env = Env::new(Rc::new(String::new()), Rc::new(String::new()));
+                            let app1 = Expr {
+                                kind: ExprKind::App(
+                                    Box::new(Expr { kind: ExprKind::Ident("f".to_string()), span: 0..0 }),
+                                    Box::new(Expr { kind: ExprKind::Ident("acc".to_string()), span: 0..0 }),
+                                ),
+                                span: 0..0,
+                            };
+                            let app2 = Expr {
+                                kind: ExprKind::App(
+                                    Box::new(app1),
+                                    Box::new(Expr { kind: ExprKind::Ident("x".to_string()), span: 0..0 }),
+                                ),
+                                span: 0..0,
+                            };
                             apply_env.define("f".to_string(), Thunk::evaluated(func_clone.clone()));
                             apply_env.define("acc".to_string(), Thunk::evaluated(acc));
                             apply_env.define("x".to_string(), Thunk::evaluated(arg));
