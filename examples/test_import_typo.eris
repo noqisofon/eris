@@ -1,0 +1,5 @@
+{ builtin } ->
+  let
+    gmt = builtin.import 'gmt';
+  in
+    gmt.puts "test"

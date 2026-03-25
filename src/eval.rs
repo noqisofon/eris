@@ -3,7 +3,7 @@ use crate::value::*;
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use std::collections::HashMap;
 
-fn report_error(env: &Env, span: std::ops::Range<usize>, msg: &str, hint: Option<&str>) {
+fn report_error(env: &Env, span: std::ops::Range<usize>, msg: &str, hint: Option<&str>, note: Option<&str>) {
     let mut builder = Report::build(ReportKind::Error, (env.filename.to_string(), span.clone()))
         .with_message(msg)
         .with_label(
@@ -20,13 +20,17 @@ fn report_error(env: &Env, span: std::ops::Range<usize>, msg: &str, hint: Option
         );
     }
 
+    if let Some(note_msg) = note {
+        builder = builder.with_note(note_msg);
+    }
+
     builder
         .finish()
         .eprint((env.filename.to_string(), Source::from(env.source.as_str())))
         .unwrap();
 }
 
-fn levenshtein_distance(a: &str, b: &str) -> usize {
+pub fn levenshtein_distance(a: &str, b: &str) -> usize {
     let len_a = a.chars().count();
     let len_b = b.chars().count();
     let mut matrix = vec![vec![0; len_b + 1]; len_a + 1];
@@ -47,7 +51,7 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
     matrix[len_a][len_b]
 }
 
-fn did_you_mean<'a>(
+pub fn did_you_mean<'a>(
     target: &str,
     candidates: impl Iterator<Item = &'a String>,
 ) -> Option<&'a String> {
@@ -106,6 +110,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                             cond_val
                         ),
                         None,
+                        None,
                     );
                     Ok(Value::Poison)
                 }
@@ -138,6 +143,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                                     env,
                                     expr.span.clone(),
                                     &format!("Cannot interpolate {:?}", val),
+                                    None,
                                     None,
                                 );
                                 return Ok(Value::Poison);
@@ -174,17 +180,19 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                 evaluate(thunk)
             } else {
                 let bindings = env.bindings.borrow();
-                let candidates: Vec<String> = bindings
-                    .keys()
-                    .cloned()
-                    .chain(std::iter::once("builtins".to_string()))
-                    .collect();
+                let candidates: Vec<String> = bindings.keys().cloned().collect();
                 let hint = did_you_mean(name, candidates.iter());
+                let note = if name == "builtins" {
+                    Some("consider receiving 'builtins' as a function argument, e.g., `{ builtins } ->`")
+                } else {
+                    None
+                };
                 report_error(
                     env,
                     expr.span.clone(),
                     &format!("Variable '{}' not found", name),
                     hint.map(|s| s.as_str()),
+                    note,
                 );
                 Ok(Value::Poison)
             }
@@ -207,6 +215,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                                 expr.span.clone(),
                                 &format!("Field '{}' not found in attribute set", field),
                                 hint.map(|s| s.as_str()),
+                                None,
                             );
                             Thunk::evaluated(Value::Poison)
                         };
@@ -220,6 +229,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                                 "Cannot access field '{}' on non-attribute set {:?}",
                                 field, current
                             ),
+                            None,
                             None,
                         );
                         return Ok(Value::Poison);
@@ -254,6 +264,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                     expr.span.clone(),
                     "Implicit field access outside of 'with' block",
                     None,
+                    None,
                 );
                 Thunk::evaluated(Value::Poison)
             });
@@ -274,6 +285,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                                 expr.span.clone(),
                                 &format!("Field '{}' not found in attribute set", field),
                                 hint.map(|s| s.as_str()),
+                                None,
                             );
                             Thunk::evaluated(Value::Poison)
                         };
@@ -287,6 +299,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                                 "Cannot access field '{}' on non-attribute set {:?}",
                                 field, current
                             ),
+                            None,
                             None,
                         );
                         return Ok(Value::Poison);
@@ -340,7 +353,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                                 Value::AttrSet(mut map) => {
                                     for name in names {
                                         let val_thunk = map.remove(&name).unwrap_or_else(|| {
-                                            report_error(env, expr.span.clone(), &format!("Missing required attribute '{}' in destructuring", name), None);
+                                            report_error(env, expr.span.clone(), &format!("Missing required attribute '{}' in destructuring", name), None, None);
                                             Thunk::evaluated(Value::Poison)
                                         });
                                         call_env.define(name, val_thunk);
@@ -354,6 +367,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                                                 map.keys()
                                             ),
                                             None,
+                                            None,
                                         );
                                         return Ok(Value::Poison);
                                     }
@@ -363,6 +377,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                                         env,
                                         expr.span.clone(),
                                         "Expected an attribute set for destructuring",
+                                        None,
                                         None,
                                     );
                                     return Ok(Value::Poison);
@@ -377,6 +392,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                         env,
                         expr.span.clone(),
                         &format!("Not a function: {:?}", func_val),
+                        None,
                         None,
                     );
                     Ok(Value::Poison)
@@ -407,7 +423,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                 return match (left, right) {
                     (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a && b)),
                     _ => {
-                        report_error(env, expr.span.clone(), "Invalid types for &&", None);
+                        report_error(env, expr.span.clone(), "Invalid types for &&", None, None);
                         Ok(Value::Poison)
                     }
                 };
@@ -427,7 +443,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                 return match (left, right) {
                     (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a || b)),
                     _ => {
-                        report_error(env, expr.span.clone(), "Invalid types for ||", None);
+                        report_error(env, expr.span.clone(), "Invalid types for ||", None, None);
                         Ok(Value::Poison)
                     }
                 };
@@ -447,7 +463,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                 (Value::Int(a), Op::Mul, Value::Int(b)) => Ok(Value::Int(a * b)),
                 (Value::Int(a), Op::Div, Value::Int(b)) => {
                     if b == 0 {
-                        report_error(env, expr.span.clone(), "Division by zero", None);
+                        report_error(env, expr.span.clone(), "Division by zero", None, None);
                         Ok(Value::Poison)
                     } else {
                         Ok(Value::Int(a / b))
@@ -491,6 +507,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                         env,
                         expr.span.clone(),
                         "Invalid types for binary operation",
+                        None,
                         None,
                     );
                     Ok(Value::Poison)

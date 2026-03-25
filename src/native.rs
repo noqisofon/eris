@@ -172,8 +172,14 @@ pub fn build_native_env() -> Value {
             let result_val = if let Some(cached_val) = stdlib_cache.get(&module_name) {
                 cached_val.clone()
             } else {
-                let source = std::fs::read_to_string(&module_name)
-                    .map_err(|e| format!("Error loading module {}: {}", module_name, e))?;
+                let source = std::fs::read_to_string(&module_name).map_err(|_| {
+                    let stdlib_names: Vec<String> = stdlib_cache.keys().cloned().collect();
+                    let hint = crate::eval::did_you_mean(&module_name, stdlib_names.iter());
+                    match hint {
+                        Some(h) => format!("Module '{}' not found. Did you mean '{}'?", module_name, h),
+                        None => format!("Module '{}' not found", module_name),
+                    }
+                })?;
 
                 let (opt_ast, errs) = crate::parser::parser()
                     .then_ignore(chumsky::prelude::end())
