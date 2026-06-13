@@ -71,14 +71,14 @@ pub fn did_you_mean<'a>(
 }
 
 pub fn evaluate(thunk: Thunk) -> Result<Value, String> {
-    let state = {
+    {
         let b = thunk.0.borrow();
         match &*b {
             ThunkState::Evaluated(val) => return Ok(val.clone()),
             ThunkState::Evaluating => return Err("Infinite recursion detected".to_string()),
             ThunkState::Unevaluated { .. } => {}
         }
-    };
+    }
 
     let (expr, env) = match thunk.0.replace(ThunkState::Evaluating) {
         ThunkState::Unevaluated { expr, env } => (expr, env),

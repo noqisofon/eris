@@ -1,0 +1,24 @@
+{ builtin } ->
+  let
+    fmt = builtin.import "fmt";
+    fs = builtin.import "fs";
+    build = builtin.import "build";
+
+    drv = build.derivation {
+      name = "hello-txt";
+      version = "1.0.0";
+      builder = "cmd";
+      args = [ "/C" "echo hello from eris build> %out%" ];
+    };
+
+    out = drv.out;
+    cached = if drv.cached then "yes" else "no";
+    content = fs.read_file drv.out;
+    store = build.store_dir;
+  in
+    [
+      (fmt.println "store: ${store}")
+      (fmt.println "out: ${out}")
+      (fmt.println "cached: ${cached}")
+      (fmt.println "content: ${content}")
+    ]

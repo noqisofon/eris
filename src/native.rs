@@ -65,6 +65,44 @@ fn serialize_value(val: Value) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Convert a value into a string suitable for a builder's environment
+/// variable, the way Nix stringifies derivation attributes.
+fn env_var_string(val: &Value) -> Result<String, String> {
+    match val {
+        Value::String(s) => Ok(s.clone()),
+        Value::Path(p) => Ok(p.clone()),
+        Value::Int(i) => Ok(i.to_string()),
+        Value::Float(f) => Ok(f.to_string()),
+        Value::Bool(b) => Ok(if *b { "1".to_string() } else { String::new() }),
+        Value::List(thunks) => {
+            let mut parts = Vec::new();
+            for t in thunks {
+                parts.push(env_var_string(&evaluate(t.clone())?)?);
+            }
+            Ok(parts.join(" "))
+        }
+        Value::AttrSet(_) => Err("cannot pass an attrset to a builder".into()),
+        Value::Closure { .. } | Value::NativeClosure(_) => {
+            Err("cannot pass a function to a builder".into())
+        }
+        Value::Poison => Err("cannot pass poison to a builder".into()),
+    }
+}
+
+fn store_dir() -> String {
+    std::env::var("ERIS_STORE").unwrap_or_else(|_| "eris-store".to_string())
+}
+
+fn remove_store_entry(path: &std::path::Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = if meta.is_dir() {
+            std::fs::remove_dir_all(path)
+        } else {
+            std::fs::remove_file(path)
+        };
+    }
+}
+
 pub fn build_native_env() -> Value {
     let mut map = HashMap::new();
     let native_ref = Rc::new(RefCell::new(None));
@@ -159,6 +197,10 @@ pub fn build_native_env() -> Value {
     stdlib_cache.insert(
         "hash".to_string(),
         preload_module("hash", include_str!("hash.eris")).unwrap(),
+    );
+    stdlib_cache.insert(
+        "build".to_string(),
+        preload_module("build", include_str!("build.eris")).unwrap(),
     );
 
     map.insert(
@@ -850,6 +892,166 @@ pub fn build_native_env() -> Value {
             Ok(Value::String(
                 base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash.as_bytes()),
             ))
+        })),
+    );
+
+    // -- build --
+    map.insert(
+        "build_store_dir".to_string(),
+        Thunk::evaluated(Value::String(store_dir())),
+    );
+    map.insert(
+        "build_derivation".to_string(),
+        Thunk::evaluated(native_fn(|drv_val| {
+            use base64::Engine;
+
+            let attrs = match &drv_val {
+                Value::AttrSet(m) => m.clone(),
+                _ => return Err("build.derivation expects an attrset".into()),
+            };
+
+            let name = match attrs.get("name") {
+                Some(t) => match evaluate(t.clone())? {
+                    Value::String(s) => s,
+                    v => {
+                        return Err(format!(
+                            "build.derivation: 'name' must be a string, got {:?}",
+                            v
+                        ))
+                    }
+                },
+                None => {
+                    return Err("build.derivation: missing required attribute 'name'".into())
+                }
+            };
+            if name.is_empty()
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
+            {
+                return Err(format!(
+                    "build.derivation: invalid name '{}' (allowed: alphanumerics, '-', '_', '.', '+')",
+                    name
+                ));
+            }
+
+            let builder = match attrs.get("builder") {
+                Some(t) => match evaluate(t.clone())? {
+                    Value::String(s) => s,
+                    Value::Path(p) => p,
+                    v => {
+                        return Err(format!(
+                            "build.derivation: 'builder' must be a string or path, got {:?}",
+                            v
+                        ))
+                    }
+                },
+                None => {
+                    return Err("build.derivation: missing required attribute 'builder'".into())
+                }
+            };
+
+            let args = match attrs.get("args") {
+                None => Vec::new(),
+                Some(t) => match evaluate(t.clone())? {
+                    Value::List(thunks) => {
+                        let mut a = Vec::new();
+                        for t in thunks {
+                            a.push(env_var_string(&evaluate(t)?)?);
+                        }
+                        a
+                    }
+                    v => {
+                        return Err(format!(
+                            "build.derivation: 'args' must be a list, got {:?}",
+                            v
+                        ))
+                    }
+                },
+            };
+
+            // Hash the whole derivation; this also rejects functions inside it.
+            let bytes = serialize_value(drv_val.clone())?;
+            let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(blake3::hash(&bytes).as_bytes());
+
+            let store = store_dir();
+            std::fs::create_dir_all(&store)
+                .map_err(|e| format!("failed to create store directory {}: {}", store, e))?;
+            let out_name = format!("{}-{}", hash, name);
+            let out_path = std::path::Path::new(&store).join(&out_name);
+            let out_str = out_path.to_string_lossy().into_owned();
+
+            let result = |cached: bool| {
+                let mut res = HashMap::new();
+                res.insert(
+                    "out".to_string(),
+                    Thunk::evaluated(Value::String(out_str.clone())),
+                );
+                res.insert(
+                    "name".to_string(),
+                    Thunk::evaluated(Value::String(name.clone())),
+                );
+                res.insert(
+                    "hash".to_string(),
+                    Thunk::evaluated(Value::String(hash.clone())),
+                );
+                res.insert("cached".to_string(), Thunk::evaluated(Value::Bool(cached)));
+                Value::AttrSet(res)
+            };
+
+            if out_path.exists() {
+                return Ok(result(true));
+            }
+
+            // Build into a temporary path, then move into place on success.
+            let tmp_path = std::path::Path::new(&store)
+                .join(format!(".tmp-{}-{}", std::process::id(), out_name));
+            remove_store_entry(&tmp_path);
+
+            let mut cmd = std::process::Command::new(&builder);
+            cmd.args(&args);
+            for (k, t) in &attrs {
+                if k == "args" {
+                    continue;
+                }
+                let v = evaluate(t.clone())?;
+                cmd.env(k, env_var_string(&v)?);
+            }
+            cmd.env("out", tmp_path.as_os_str());
+
+            let output = cmd
+                .output()
+                .map_err(|e| format!("failed to execute builder '{}': {}", builder, e))?;
+            if !output.status.success() {
+                remove_store_entry(&tmp_path);
+                return Err(format!(
+                    "builder for '{}' failed with status {}: {}",
+                    name,
+                    output.status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            if !tmp_path.exists() {
+                return Err(format!(
+                    "builder for '{}' exited successfully but did not create its output ($out)",
+                    name
+                ));
+            }
+
+            if let Err(e) = std::fs::rename(&tmp_path, &out_path) {
+                if out_path.exists() {
+                    // Someone else built it concurrently; ours is redundant.
+                    remove_store_entry(&tmp_path);
+                } else {
+                    return Err(format!(
+                        "failed to move build output into store for '{}': {}",
+                        name, e
+                    ));
+                }
+            }
+
+            Ok(result(false))
         })),
     );
 

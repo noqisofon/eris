@@ -1,0 +1,5 @@
+# build.eris
+{ __native } -> rec {
+  derivation = |drv| -> __native.build_derivation drv;
+  store_dir = __native.build_store_dir;
+}
