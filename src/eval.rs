@@ -2,8 +2,24 @@ use crate::ast::*;
 use crate::value::*;
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static HAD_ERROR: AtomicBool = AtomicBool::new(false);
+
+/// Whether any `report_error` call has fired since the last `reset_error_flag`.
+/// Callers use this to decide the process exit code after a lazily-evaluated
+/// program has finished running (errors are reported and evaluation limps on
+/// with `Value::Poison` rather than aborting immediately).
+pub fn had_error() -> bool {
+    HAD_ERROR.load(Ordering::SeqCst)
+}
+
+pub fn reset_error_flag() {
+    HAD_ERROR.store(false, Ordering::SeqCst);
+}
 
 fn report_error(env: &Env, span: std::ops::Range<usize>, msg: &str, hint: Option<&str>, note: Option<&str>) {
+    HAD_ERROR.store(true, Ordering::SeqCst);
     let mut builder = Report::build(ReportKind::Error, (env.filename.to_string(), span.clone()))
         .with_message(msg)
         .with_label(
@@ -70,6 +86,38 @@ pub fn did_you_mean<'a>(
     best
 }
 
+fn value_type_name(val: &Value) -> &'static str {
+    match val {
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Bool(_) => "bool",
+        Value::String(_) => "string",
+        Value::Path(_) => "path",
+        Value::List(_) => "list",
+        Value::AttrSet(_) => "attrset",
+        Value::Closure { .. } | Value::NativeClosure(_) => "closure",
+        Value::Poison => "poison",
+    }
+}
+
+/// Maps a type name written after `::` to the canonical type it asserts.
+/// Sized aliases like `int32`/`float64` all collapse onto the one runtime
+/// representation eris actually has (`Value::Int`/`Value::Float`); the width
+/// itself isn't checked.
+fn resolve_type_name(name: &str) -> Option<&'static str> {
+    match name {
+        "int" | "int8" | "int16" | "int32" | "int64" => Some("int"),
+        "float" | "float32" | "float64" | "double" => Some("float"),
+        "bool" | "boolean" => Some("bool"),
+        "string" | "str" => Some("string"),
+        "path" => Some("path"),
+        "list" => Some("list"),
+        "attrset" | "set" => Some("attrset"),
+        "closure" | "function" | "fn" => Some("closure"),
+        _ => None,
+    }
+}
+
 pub fn evaluate(thunk: Thunk) -> Result<Value, String> {
     {
         let b = thunk.0.borrow();
@@ -113,6 +161,47 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                         None,
                     );
                     Ok(Value::Poison)
+                }
+            }
+        }
+        ExprKind::TypeAnnotation(inner, type_name) => {
+            let val = eval_expr(inner, env)?;
+            if let Value::Poison = val {
+                return Ok(Value::Poison);
+            }
+            match resolve_type_name(type_name) {
+                None => {
+                    let known = [
+                        "int", "float", "bool", "string", "path", "list", "attrset", "closure",
+                    ];
+                    let known_strings: Vec<String> = known.iter().map(|s| s.to_string()).collect();
+                    let hint = did_you_mean(type_name, known_strings.iter());
+                    report_error(
+                        env,
+                        expr.span.clone(),
+                        &format!("Unknown type '{}'", type_name),
+                        hint.map(|s| s.as_str()),
+                        None,
+                    );
+                    Ok(Value::Poison)
+                }
+                Some(expected) => {
+                    let actual = value_type_name(&val);
+                    if actual == expected {
+                        Ok(val)
+                    } else {
+                        report_error(
+                            env,
+                            expr.span.clone(),
+                            &format!(
+                                "Type mismatch: expected `{}`, got {:?} (a `{}`)",
+                                type_name, val, actual
+                            ),
+                            None,
+                            None,
+                        );
+                        Ok(Value::Poison)
+                    }
                 }
             }
         }

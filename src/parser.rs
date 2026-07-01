@@ -358,7 +358,20 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, PExtra<'src>> {
             )
             .map_with(mk_binop);
 
-        lambda.or(logical_or).padded().labelled("expression")
+        // `expr :: type_name` binds the whole preceding expression, so it sits
+        // at the very bottom of the precedence stack (just above `lambda`).
+        let type_annotated = logical_or
+            .clone()
+            .then(just("::").padded().ignore_then(ident_str.clone()).or_not())
+            .map_with(|(e, ty), extra| match ty {
+                Some(name) => Expr {
+                    kind: ExprKind::TypeAnnotation(Box::new(e), name),
+                    span: extra.span().into_range(),
+                },
+                None => e,
+            });
+
+        lambda.or(type_annotated).padded().labelled("expression")
     })
     .padded_by(comment.repeated())
 }

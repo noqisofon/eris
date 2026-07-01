@@ -45,13 +45,25 @@ struct Cli {
 enum Commands {
     /// Run a script
     Run { file: String },
-    /// Syntax check only
-    Check { file: String },
+    /// Check a script without running it
+    Check {
+        file: String,
+        /// `syntax` only parses the file; `type` also runs it and checks
+        /// every `expr :: type` annotation as it gets forced.
+        #[arg(long, value_enum, default_value_t = CheckLevel::Syntax)]
+        level: CheckLevel,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CheckLevel {
+    Syntax,
+    Type,
 }
 
 enum Command {
     Run(String),
-    Check(String),
+    Check(String, CheckLevel),
 }
 
 fn parse_args() -> Command {
@@ -59,7 +71,7 @@ fn parse_args() -> Command {
 
     match cli.command {
         Some(Commands::Run { file }) => Command::Run(file),
-        Some(Commands::Check { file }) => Command::Check(file),
+        Some(Commands::Check { file, level }) => Command::Check(file, level),
         None => match cli.file {
             Some(file) => Command::Run(file),
             None => {
@@ -104,7 +116,12 @@ fn parse_source(filename: &str, source: &str) -> Option<crate::ast::Expr> {
     opt_ast
 }
 
-fn run_check(filename: &str) {
+fn run_check(filename: &str, level: CheckLevel) {
+    if level == CheckLevel::Type {
+        run_check_type(filename);
+        return;
+    }
+
     let source = fs::read_to_string(filename).unwrap_or_else(|err| {
         eprintln!("Error reading file {}: {}", filename, err);
         std::process::exit(1);
@@ -120,7 +137,11 @@ fn run_check(filename: &str) {
     }
 }
 
-fn run_script(filename: &str) {
+/// Parses and fully evaluates `filename`, forcing every value it produces so
+/// that any `expr :: type` annotation along the way gets checked. Errors are
+/// reported via `crate::eval`'s ariadne diagnostics; check `eval::had_error()`
+/// afterwards to see whether anything went wrong.
+fn evaluate_file(filename: &str) -> Value {
     let source = fs::read_to_string(filename).unwrap_or_else(|err| {
         eprintln!("Error reading file {}: {}", filename, err);
         std::process::exit(1);
@@ -233,11 +254,27 @@ fn run_script(filename: &str) {
         });
     }
 
-    match deep_force(result_val) {
-        Ok(_val) => {
-            // Evaluated successfully
-        }
-        Err(e) => eprintln!("Runtime error: {}", e),
+    deep_force(result_val).unwrap_or_else(|e| {
+        eprintln!("Runtime error: {}", e);
+        std::process::exit(1);
+    })
+}
+
+fn run_script(filename: &str) {
+    evaluate_file(filename);
+    if crate::eval::had_error() {
+        std::process::exit(1);
+    }
+}
+
+fn run_check_type(filename: &str) {
+    crate::eval::reset_error_flag();
+    evaluate_file(filename);
+    if crate::eval::had_error() {
+        eprintln!("FAILED: {} has type errors", filename);
+        std::process::exit(1);
+    } else {
+        println!("OK: {} has no type errors", filename);
     }
 }
 
@@ -250,7 +287,7 @@ fn main() {
         .stack_size(8 * 1024 * 1024)
         .spawn(move || match command {
             Command::Run(filename) => run_script(&filename),
-            Command::Check(filename) => run_check(&filename),
+            Command::Check(filename, level) => run_check(&filename, level),
         })
         .unwrap()
         .join()

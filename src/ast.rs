@@ -27,6 +27,7 @@ pub enum ExprKind {
     ImplicitAccess(Vec<String>),
     With(Box<Expr>, Box<Expr>),
     IfElse(Box<Expr>, Box<Expr>, Box<Expr>),
+    TypeAnnotation(Box<Expr>, String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
