@@ -31,22 +31,50 @@ fn deep_force(val: Value) -> Result<Value, String> {
     }
 }
 
-fn run_interpreter() {
+enum Command {
+    Run(String),
+    Check(String),
+}
+
+fn print_usage() {
+    eprintln!("Usage:");
+    eprintln!("  eris <file.eris>          # same as `eris run <file.eris>`");
+    eprintln!("  eris run <file.eris>      # run a script");
+    eprintln!("  eris check <file.eris>    # syntax check only");
+}
+
+fn parse_args() -> Command {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: eris <file.eris>");
-        std::process::exit(1);
+
+    match args.get(1).map(String::as_str) {
+        Some("run") => match args.get(2) {
+            Some(file) => Command::Run(file.clone()),
+            None => {
+                print_usage();
+                std::process::exit(1);
+            }
+        },
+        Some("check") => match args.get(2) {
+            Some(file) => Command::Check(file.clone()),
+            None => {
+                print_usage();
+                std::process::exit(1);
+            }
+        },
+        Some(file) => Command::Run(file.to_string()),
+        None => {
+            print_usage();
+            std::process::exit(1);
+        }
     }
+}
 
-    let filename = &args[1];
-    let source = fs::read_to_string(filename).unwrap_or_else(|err| {
-        eprintln!("Error reading file {}: {}", filename, err);
-        std::process::exit(1);
-    });
-
+/// Parses `source`, printing any syntax errors under `filename`. Returns `None`
+/// (after printing diagnostics) if parsing failed.
+fn parse_source(filename: &str, source: &str) -> Option<crate::ast::Expr> {
     let (opt_ast, errs) = parser()
         .then_ignore(chumsky::prelude::end())
-        .parse(&source)
+        .parse(source)
         .into_output_errors();
 
     if !errs.is_empty() {
@@ -55,23 +83,48 @@ fn run_interpreter() {
             Report::build(
                 ReportKind::Error,
                 (
-                    filename.clone(),
+                    filename.to_string(),
                     err.span().into_range().start..err.span().into_range().start,
                 ),
             )
             .with_message(err.to_string())
             .with_label(
-                Label::new((filename.clone(), err.span().into_range()))
+                Label::new((filename.to_string(), err.span().into_range()))
                     .with_message(err.reason().to_string())
                     .with_color(Color::Red),
             )
             .finish()
-            .eprint((filename.clone(), Source::from(&source)))
+            .eprint((filename.to_string(), Source::from(source)))
             .unwrap();
         }
     }
 
-    let expr = match opt_ast {
+    opt_ast
+}
+
+fn run_check(filename: &str) {
+    let source = fs::read_to_string(filename).unwrap_or_else(|err| {
+        eprintln!("Error reading file {}: {}", filename, err);
+        std::process::exit(1);
+    });
+
+    match parse_source(filename, &source) {
+        Some(_) => {
+            println!("OK: {} has no syntax errors", filename);
+        }
+        None => {
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_script(filename: &str) {
+    let source = fs::read_to_string(filename).unwrap_or_else(|err| {
+        eprintln!("Error reading file {}: {}", filename, err);
+        std::process::exit(1);
+    });
+
+    let expr = match parse_source(filename, &source) {
         Some(ast) => ast,
         None => {
             std::process::exit(1);
@@ -187,11 +240,16 @@ fn run_interpreter() {
 }
 
 fn main() {
+    let command = parse_args();
+
     // Chumsky 0.12 in debug mode uses massive stack space that overflows the default 1MB Windows stack.
     // Instead of forcing users to build in release mode, we spawn the interpreter in an 8MB stack thread.
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
-        .spawn(run_interpreter)
+        .spawn(move || match command {
+            Command::Run(filename) => run_script(&filename),
+            Command::Check(filename) => run_check(&filename),
+        })
         .unwrap()
         .join()
         .unwrap();
