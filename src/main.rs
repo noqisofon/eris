@@ -7,8 +7,8 @@ pub mod value;
 use crate::eval::evaluate;
 use crate::parser::parser;
 use crate::value::{Env, Thunk, Value};
-use chumsky::Parser;
-use std::env;
+use chumsky::Parser as _;
+use clap::{CommandFactory, Parser, Subcommand};
 use std::fs;
 
 fn deep_force(val: Value) -> Result<Value, String> {
@@ -31,41 +31,43 @@ fn deep_force(val: Value) -> Result<Value, String> {
     }
 }
 
+#[derive(Parser)]
+#[command(name = "eris", version, about = "Eris language interpreter")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Script file to run (same as `eris run <file>`)
+    file: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Run a script
+    Run { file: String },
+    /// Syntax check only
+    Check { file: String },
+}
+
 enum Command {
     Run(String),
     Check(String),
 }
 
-fn print_usage() {
-    eprintln!("Usage:");
-    eprintln!("  eris <file.eris>          # same as `eris run <file.eris>`");
-    eprintln!("  eris run <file.eris>      # run a script");
-    eprintln!("  eris check <file.eris>    # syntax check only");
-}
-
 fn parse_args() -> Command {
-    let args: Vec<String> = env::args().collect();
+    let cli = Cli::parse();
 
-    match args.get(1).map(String::as_str) {
-        Some("run") => match args.get(2) {
-            Some(file) => Command::Run(file.clone()),
+    match cli.command {
+        Some(Commands::Run { file }) => Command::Run(file),
+        Some(Commands::Check { file }) => Command::Check(file),
+        None => match cli.file {
+            Some(file) => Command::Run(file),
             None => {
-                print_usage();
+                Cli::command().print_help().ok();
+                println!();
                 std::process::exit(1);
             }
         },
-        Some("check") => match args.get(2) {
-            Some(file) => Command::Check(file.clone()),
-            None => {
-                print_usage();
-                std::process::exit(1);
-            }
-        },
-        Some(file) => Command::Run(file.to_string()),
-        None => {
-            print_usage();
-            std::process::exit(1);
-        }
     }
 }
 
