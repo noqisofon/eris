@@ -28,6 +28,8 @@ Eris（エリス）は、純粋に機能的で遅延評価（Lazy Evaluation）�
   エントリーポイントで `{ builtin } -> ...` のように外部機能を注入し、事前ロードされた豊富な標準ライブラリ（後述）を `builtin.import` でインポートできます。
 - **高度なエラーレポートと Typo 検出 (Did you mean?)**:
   `ariadne` クレートによる美しいエラー表示に加え、変数名・オブジェクトのフィールド名・標準ライブラリのモジュール名で存在しないものが指定された際、**レーベンシュタイン距離を用いた自動 Typo 検出と修正候補の提案**を行います。また、未定義の `builtins` が呼び出された場合は自動で引数受け取りを促す親切なノートを表示します。
+- **`::` によるランタイム型ヒント**:
+  式の末尾に `expr :: type_name` を付けると、その式が評価された際に実際の値が指定した型と一致するかをチェックします（例: `(1 + 2) :: int`）。`int` / `float` / `bool` / `string` / `path` / `list` / `attrset` / `closure` とそのエイリアス（`str`, `bool`→`boolean`, `fn`→`function` など）に対応し、`eris check --level type` で実行前に一括検査できます。
 
 ---
 
@@ -140,8 +142,20 @@ Nix の derivation に相当するキャッシュ付きビルドを実行でき�
 本プロジェクトは Rust (`cargo`) で構築されています。
 
 ### スクリプトの実行
+`eris run <file>` サブコマンド、または省略形として直接ファイルパスを渡す形式のどちらでも実行できます。
+
 ```bash
+cargo run -- run <file.eris>
+# もしくは
 cargo run -- <file.eris>
+```
+
+### 構文・型のチェック
+`eris check` サブコマンドはスクリプトを実行せずに検証します。`--level syntax`（デフォルト）は構文エラーの有無のみを確認し、`--level type` は実際にスクリプトを評価して、式に付与された `:: type_name` の型ヒントがすべて満たされているかを検査します。
+
+```bash
+cargo run -- check <file.eris>
+cargo run -- check --level type <file.eris>
 ```
 
 ### 単体テストの実行
@@ -157,6 +171,7 @@ cargo test
 - [Rust](https://www.rust-lang.org/) (2024 Edition)
 - [chumsky](https://github.com/zesterer/chumsky) (0.12.0) - 高度なパーサコンビネータ
 - [ariadne](https://github.com/zesterer/ariadne) (0.6.0) - エラー表示ユーティリティ
+- [clap](https://github.com/clap-rs/clap) (4) - `run` / `check` サブコマンドを備えた CLI 引数パーサ（derive マクロ使用）
 - [serde_json](https://github.com/serde-rs/json) (1.0) - JSON形式とのシリアライズ・デシリアライズ
 - [sha2](https://github.com/RustCrypto/hashes) (0.10.9) - SHA-256 / SHA-512 暗号ハッシュ
 - [blake3](https://github.com/BLAKE3-team/BLAKE3) (1.8.3) - 高速ハッシュ
