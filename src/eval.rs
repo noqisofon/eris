@@ -138,7 +138,47 @@ pub fn evaluate(thunk: Thunk) -> Result<Value, String> {
     Ok(val)
 }
 
+/// Maximum nesting of `eval_expr` calls before evaluation is aborted with an
+/// error. Eris has no tail-call elimination, so deep (or infinite) recursion
+/// would otherwise overflow the native stack and abort the process. The limit
+/// has to stay within what `main`'s interpreter thread stack can hold, even in
+/// unoptimised builds.
+pub const MAX_EVAL_DEPTH: usize = 10_000;
+
+thread_local! {
+    static EVAL_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Decrements the depth counter when an `eval_expr` frame exits, including on
+/// early `?` returns.
+struct DepthGuard;
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        EVAL_DEPTH.with(|d| d.set(d.get() - 1));
+    }
+}
+
 pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
+    let depth = EVAL_DEPTH.with(|d| {
+        d.set(d.get() + 1);
+        d.get()
+    });
+    let _guard = DepthGuard;
+    if depth > MAX_EVAL_DEPTH {
+        report_error(
+            env,
+            expr.span.clone(),
+            "Recursion limit exceeded",
+            None,
+            Some("evaluation nested too deeply; check for unbounded recursion (eris has no tail-call optimisation)"),
+        );
+        return Ok(Value::Poison);
+    }
+    eval_expr_inner(expr, env)
+}
+
+fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
     match &expr.kind {
         ExprKind::Bool(b) => Ok(Value::Bool(*b)),
         ExprKind::IfElse(cond, true_branch, false_branch) => {

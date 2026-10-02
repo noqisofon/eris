@@ -280,13 +280,20 @@ fn run_check_type(filename: &str) {
     }
 }
 
+/// Stack size of the interpreter thread. The evaluator is recursive, and an
+/// unoptimised build burns tens of KB of stack per eris-level call, so this
+/// must be large enough for `eval::MAX_EVAL_DEPTH` in a debug build. The memory
+/// is only reserved, not committed, until it is actually used.
+const INTERPRETER_STACK_SIZE: usize = 512 * 1024 * 1024;
+
 fn main() {
     let command = parse_args();
 
-    // Chumsky 0.12 in debug mode uses massive stack space that overflows the default 1MB Windows stack.
-    // Instead of forcing users to build in release mode, we spawn the interpreter in an 8MB stack thread.
+    // Chumsky 0.12 in debug mode uses massive stack space that overflows the default 1MB Windows stack,
+    // and the recursive evaluator needs far more than the main thread offers.
+    // Instead of forcing users to build in release mode, we spawn the interpreter in a big-stack thread.
     std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(INTERPRETER_STACK_SIZE)
         .spawn(move || match command {
             Command::Run(filename) => run_script(&filename),
             Command::Check(filename, level) => run_check(&filename, level),
@@ -465,6 +472,19 @@ mod tests {
             "expected an out-of-range error, got: {:?}",
             errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_unbounded_recursion_hits_limit() {
+        // Test threads get a small stack, so run on one sized like the real
+        // interpreter thread.
+        let out = std::thread::Builder::new()
+            .stack_size(INTERPRETER_STACK_SIZE)
+            .spawn(|| eval_code("let f = |n| -> f (n + 1); in f 0"))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(out, "<poison>");
     }
 
     #[test]
