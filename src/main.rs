@@ -153,7 +153,9 @@ fn run_check(filename: &str, level: CheckLevel) {
 }
 
 /// Parses and fully evaluates `filename`, forcing every value it produces so
-/// that any `expr :: type` annotation along the way gets checked. Errors are
+/// that any `expr :: type` annotation along the way gets checked. (`check
+/// --level type` then goes on to force the values nothing needed; see
+/// `force_unused_thunks`.) Errors are
 /// reported via `crate::eval`'s ariadne diagnostics; check `eval::had_error()`
 /// afterwards to see whether anything went wrong.
 fn evaluate_file(filename: &str) -> Value {
@@ -282,8 +284,45 @@ fn run_script(filename: &str) {
     }
 }
 
+/// Upper bound on how many otherwise-unused values `check --level type` will
+/// force. Lazily built infinite structures would otherwise never finish.
+const MAX_EXTRA_FORCED_THUNKS: usize = 1_000_000;
+
+/// Forces every thunk the program created but never needed (unused `let`
+/// bindings, unused attributes and list elements, unused function arguments), so
+/// that `::` annotations inside them get checked too. Errors other than type
+/// mismatches are ignored here (see `eval::set_lenient`). Code that is never
+/// reached by evaluation at all (an untaken `if` branch, a function nobody calls)
+/// is still not checked.
+fn force_unused_thunks() {
+    crate::eval::set_lenient(true);
+    let mut forced = 0;
+    let mut index = 0;
+    while let Some(thunk) = crate::value::tracked_thunk(index) {
+        index += 1;
+        if !thunk.is_unevaluated() {
+            continue;
+        }
+        if forced >= MAX_EXTRA_FORCED_THUNKS {
+            eprintln!(
+                "note: stopped forcing unused values after {}; the rest were not type-checked",
+                MAX_EXTRA_FORCED_THUNKS
+            );
+            break;
+        }
+        forced += 1;
+        // A runtime failure in code the program never ran is not a type error.
+        let _ = evaluate(thunk);
+    }
+    crate::eval::set_lenient(false);
+    crate::value::stop_tracking_thunks();
+}
+
 fn run_check_type(filename: &str) {
+    crate::eval::reset_error_flag();
+    crate::value::start_tracking_thunks();
     evaluate_file(filename);
+    force_unused_thunks();
     if crate::eval::had_error() {
         eprintln!("FAILED: {} has type errors", filename);
         std::process::exit(1);
