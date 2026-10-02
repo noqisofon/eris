@@ -90,12 +90,36 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, PExtra<'src>> {
             .then_ignore(just("}"))
             .map(StringPart::Interpolation);
 
+        // `\n \t \r \\ \" \$` inside a double-quoted string. `\$` is how to write a
+        // literal `$` right before a `{` without starting an interpolation. Any
+        // other escape is an error rather than being passed through silently.
+        let escape = just('\\').ignore_then(any().validate(|c: char, e, emitter| match c {
+            'n' => "\n".to_string(),
+            't' => "\t".to_string(),
+            'r' => "\r".to_string(),
+            '\\' => "\\".to_string(),
+            '"' => "\"".to_string(),
+            '$' => "$".to_string(),
+            other => {
+                emitter.emit(Rich::custom(
+                    e.span(),
+                    format!(
+                        "unknown escape sequence '\\{}' (supported: \\n \\t \\r \\\\ \\\" \\$; \
+                         use a single-quoted string for raw text)",
+                        other
+                    ),
+                ));
+                String::new()
+            }
+        }));
+
         let literal_chars = choice((
-            none_of("$\"")
+            none_of("$\"\\")
                 .repeated()
                 .at_least(1)
                 .to_slice()
                 .map(|s: &str| s.to_string()),
+            escape,
             just('$')
                 .then_ignore(just('{').not())
                 .map(|_| "$".to_string()),

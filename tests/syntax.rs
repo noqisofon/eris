@@ -120,3 +120,62 @@ fn arrow_and_lambda_syntax_still_parse() {
     assert_eq!(printed("(|a, b| -> a - b) 5 2"), "3\n");
     assert_eq!(printed("({ a; b; } -> a - -b) { a = 1; b = 2; }"), "3\n");
 }
+
+// ---- string escapes -------------------------------------------------------
+
+/// Evaluates a script whose body is `expr`, returning stdout of `println expr`.
+fn printed_string(expr: &str) -> String {
+    printed(expr)
+}
+
+#[test]
+fn escapes_in_double_quoted_strings() {
+    assert_eq!(printed_string(r#""a\nb""#), "a\nb\n");
+    assert_eq!(printed_string(r#""tab\there""#), "tab\there\n");
+    assert_eq!(printed_string(r#""back\\slash""#), "back\\slash\n");
+    assert_eq!(printed_string(r#""say \"hi\"""#), "say \"hi\"\n");
+    assert_eq!(printed_string(r#""C:\\Users\\me""#), "C:\\Users\\me\n");
+    assert_eq!(printed_string(r#""cr\rlf""#), "cr\rlf\n");
+}
+
+#[test]
+fn escaped_dollar_prevents_interpolation() {
+    assert_eq!(printed_string(r#""cost \$5""#), "cost $5\n");
+    assert_eq!(printed_string(r#""literal \${x}""#), "literal ${x}\n");
+    // ...while an unescaped one still interpolates, and a lone `$` is untouched.
+    assert_eq!(printed_string(r#""value ${x}""#), "value 4\n");
+    assert_eq!(printed_string(r#""plain $ dollar""#), "plain $ dollar\n");
+}
+
+#[test]
+fn strings_without_backslashes_are_unchanged() {
+    assert_eq!(printed_string(r#""hello, world""#), "hello, world\n");
+    assert_eq!(printed_string("\"multi\nline\""), "multi\nline\n");
+}
+
+#[test]
+fn single_quoted_strings_stay_raw() {
+    assert_eq!(printed_string(r"'raw \n stays'"), "raw \\n stays\n");
+    assert_eq!(printed_string(r"'C:\Users'"), "C:\\Users\n");
+}
+
+#[test]
+fn unknown_escape_is_a_syntax_error() {
+    let o = run_script(r#""bad \q escape""#);
+    assert_eq!(o.code, Some(1));
+    assert!(o.stderr.contains("unknown escape sequence '\\q'"), "stderr: {}", o.stderr);
+    // The message points at the supported ones and at raw strings.
+    assert!(o.stderr.contains("single-quoted"), "stderr: {}", o.stderr);
+}
+
+#[test]
+fn unterminated_string_after_an_escaped_quote_is_a_syntax_error() {
+    // `\"` is an escaped quote, so this string never closes.
+    let o = run_script(r#""abc\""#);
+    assert_eq!(o.code, Some(1));
+}
+
+#[test]
+fn escapes_work_in_the_string_part_of_an_interpolation_too() {
+    assert_eq!(printed_string(r#""[${x}]\n""#), "[4]\n\n");
+}
