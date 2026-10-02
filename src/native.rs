@@ -99,6 +99,108 @@ fn env_var_string_at(val: &Value, depth: usize) -> Result<String, String> {
     }
 }
 
+/// Feeds a digest of what is at `path` into `hasher`: the bytes of a file, the
+/// sorted entries of a directory (recursively), or the target of a symlink.
+/// A derivation's output has to depend on the *contents* of everything it reads,
+/// not just on the names it was given.
+fn hash_path_contents(
+    path: &std::path::Path,
+    hasher: &mut blake3::Hasher,
+    depth: usize,
+) -> Result<(), String> {
+    crate::eval::check_data_depth(depth)?;
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|e| format!("cannot read input '{}': {}", path.display(), e))?;
+    if meta.file_type().is_symlink() {
+        let target = std::fs::read_link(path)
+            .map_err(|e| format!("cannot read link '{}': {}", path.display(), e))?;
+        hasher.update(b"L");
+        hasher.update(target.to_string_lossy().as_bytes());
+    } else if meta.is_dir() {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(path)
+            .map_err(|e| format!("cannot read directory '{}': {}", path.display(), e))?
+        {
+            let entry = entry.map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
+            names.push(entry.file_name());
+        }
+        names.sort();
+        hasher.update(format!("D:{}:", names.len()).as_bytes());
+        for name in names {
+            let name_bytes = name.to_string_lossy();
+            hasher.update(format!("{}:", name_bytes.len()).as_bytes());
+            hasher.update(name_bytes.as_bytes());
+            hash_path_contents(&path.join(&name), hasher, depth + 1)?;
+        }
+    } else {
+        let mut file = std::fs::File::open(path)
+            .map_err(|e| format!("cannot read input '{}': {}", path.display(), e))?;
+        hasher.update(format!("F:{}:", meta.len()).as_bytes());
+        std::io::copy(&mut file, hasher)
+            .map_err(|e| format!("cannot read input '{}': {}", path.display(), e))?;
+    }
+    Ok(())
+}
+
+/// Collects every `path` value among a derivation's attributes (directly, or
+/// inside lists such as `args`), in attribute-name order.
+fn collect_input_paths(
+    val: &Value,
+    out: &mut Vec<String>,
+    depth: usize,
+) -> Result<(), String> {
+    crate::eval::check_data_depth(depth)?;
+    match val {
+        Value::Path(p) => out.push(p.clone()),
+        Value::List(thunks) => {
+            for t in thunks {
+                collect_input_paths(&evaluate(t.clone())?, out, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The environment every builder starts from, before the derivation's own
+/// attributes are layered on top. It is deliberately tiny and fixed (not
+/// inherited from the evaluator's shell), and it is part of the derivation hash.
+fn default_build_env() -> Vec<(String, String)> {
+    if cfg!(windows) {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        vec![
+            ("PATH".to_string(), format!(r"{root}\System32;{root}")),
+            ("SystemRoot".to_string(), root),
+        ]
+    } else {
+        vec![("PATH".to_string(), "/usr/bin:/bin".to_string())]
+    }
+}
+
+/// Finds the executable a builder name refers to. A name with a directory part
+/// is used as given; a bare name is looked up in `path_var`, the `PATH` the
+/// builder itself will see. The builder runs from the resolved file, whose
+/// contents are part of the hash.
+fn resolve_builder(builder: &str, path_var: &str) -> Result<std::path::PathBuf, String> {
+    if builder.contains('/') || builder.contains('\\') {
+        return Ok(std::path::PathBuf::from(builder));
+    }
+    let exts: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+    for dir in std::env::split_paths(path_var) {
+        for ext in exts {
+            let candidate = dir.join(format!("{}{}", builder, ext));
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    Err(format!("builder '{}' not found in PATH ({})", builder, path_var))
+}
+
 fn store_dir() -> String {
     std::env::var("ERIS_STORE").unwrap_or_else(|_| "eris-store".to_string())
 }
@@ -986,16 +1088,82 @@ pub fn build_native_env() -> Value {
                 },
             };
 
+            for k in attrs.keys() {
+                if k.is_empty() || k.contains('=') || k.contains('\0') {
+                    return Err(format!(
+                        "build.derivation: attribute name '{}' cannot be used as an environment variable",
+                        k.escape_debug()
+                    ));
+                }
+            }
+            if attrs.contains_key("out") {
+                return Err(
+                    "build.derivation: 'out' is reserved (the builder receives its output path as $out)"
+                        .into(),
+                );
+            }
+
+            // The builder's whole environment: the fixed defaults, overridden by
+            // the derivation's own attributes (except `args`). Computed up front
+            // so a bad attribute fails the same way on a cache hit and a miss.
+            let defaults = default_build_env();
+            let mut build_env: std::collections::BTreeMap<String, String> =
+                defaults.iter().cloned().collect();
+            for (k, t) in &attrs {
+                if k == "args" {
+                    continue;
+                }
+                build_env.insert(k.clone(), env_var_string(&evaluate(t.clone())?)?);
+            }
+
+            let builder_path = resolve_builder(&builder, &build_env["PATH"])
+                .map_err(|e| format!("build.derivation: {}", e))?;
+            if builder_path.is_dir() {
+                return Err(format!(
+                    "build.derivation: builder '{}' is a directory",
+                    builder_path.display()
+                ));
+            }
+
             // Hash the whole derivation; this also rejects functions inside it.
+            // On top of the attribute values, the hash covers the default
+            // environment, the contents of the builder and of every path the
+            // derivation names, so editing a build script invalidates the cached
+            // output instead of silently reusing it.
             let bytes = serialize_value(drv_val.clone())?;
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&bytes);
+            for (k, v) in &defaults {
+                hasher.update(format!("\0env:{}={}", k, v).as_bytes());
+            }
+            hasher.update(b"\0builder\0");
+            hash_path_contents(&builder_path, &mut hasher, 0)
+                .map_err(|e| format!("build.derivation: {}", e))?;
+            let mut attr_names: Vec<&String> = attrs.keys().collect();
+            attr_names.sort();
+            let mut input_paths = Vec::new();
+            for k in attr_names {
+                collect_input_paths(&evaluate(attrs[k].clone())?, &mut input_paths, 0)?;
+            }
+            for p in &input_paths {
+                hasher.update(format!("\0input:{}:", p.len()).as_bytes());
+                hasher.update(p.as_bytes());
+                hash_path_contents(std::path::Path::new(p), &mut hasher, 0)
+                    .map_err(|e| format!("build.derivation: {}", e))?;
+            }
             let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(blake3::hash(&bytes).as_bytes());
+                .encode(hasher.finalize().as_bytes());
 
             let store = store_dir();
             std::fs::create_dir_all(&store)
                 .map_err(|e| format!("failed to create store directory {}: {}", store, e))?;
+            // `$out` must stay valid if the builder changes its working directory,
+            // so hand it an absolute path (`absolute` does not resolve symlinks
+            // and, unlike `canonicalize`, avoids Windows' `\\?\` prefix).
+            let store_abs = std::path::absolute(&store)
+                .map_err(|e| format!("failed to resolve store directory {}: {}", store, e))?;
             let out_name = format!("{}-{}", hash, name);
-            let out_path = std::path::Path::new(&store).join(&out_name);
+            let out_path = store_abs.join(&out_name);
             let out_str = out_path.to_string_lossy().into_owned();
 
             let result = |cached: bool| {
@@ -1021,19 +1189,15 @@ pub fn build_native_env() -> Value {
             }
 
             // Build into a temporary path, then move into place on success.
-            let tmp_path = std::path::Path::new(&store)
-                .join(format!(".tmp-{}-{}", std::process::id(), out_name));
+            let tmp_path = store_abs.join(format!(".tmp-{}-{}", std::process::id(), out_name));
             remove_store_entry(&tmp_path);
 
-            let mut cmd = std::process::Command::new(&builder);
+            let mut cmd = std::process::Command::new(&builder_path);
             cmd.args(&args);
-            for (k, t) in &attrs {
-                if k == "args" {
-                    continue;
-                }
-                let v = evaluate(t.clone())?;
-                cmd.env(k, env_var_string(&v)?);
-            }
+            // Start from an empty environment so the build cannot depend on (or
+            // leak) whatever happens to be set in the evaluator's shell.
+            cmd.env_clear();
+            cmd.envs(&build_env);
             cmd.env("out", tmp_path.as_os_str());
 
             let output = cmd
