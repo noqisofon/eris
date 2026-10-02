@@ -250,6 +250,11 @@ pub fn build_native_env() -> Value {
     map.insert(
         "abort".to_string(),
         Thunk::evaluated(native_fn(|v| {
+            // `eris check --level type` forces values the program never asked
+            // for; an `abort` in one of those must not end the check.
+            if crate::eval::is_lenient() {
+                return Ok(Value::Poison);
+            }
             let code = match v {
                 Value::Int(i) => i as i32,
                 _ => 1,

@@ -293,9 +293,10 @@ const MAX_EXTRA_FORCED_THUNKS: usize = 1_000_000;
 /// that `::` annotations inside them get checked too. Errors other than type
 /// mismatches are ignored here (see `eval::set_lenient`). Code that is never
 /// reached by evaluation at all (an untaken `if` branch, a function nobody calls)
-/// is still not checked.
-fn force_unused_thunks() {
+/// is still not checked. Returns `false` if it had to stop early.
+fn force_unused_thunks() -> bool {
     crate::eval::set_lenient(true);
+    let mut complete = true;
     let mut forced = 0;
     let mut index = 0;
     while let Some(thunk) = crate::value::tracked_thunk(index) {
@@ -308,6 +309,7 @@ fn force_unused_thunks() {
                 "note: stopped forcing unused values after {}; the rest were not type-checked",
                 MAX_EXTRA_FORCED_THUNKS
             );
+            complete = false;
             break;
         }
         forced += 1;
@@ -316,18 +318,26 @@ fn force_unused_thunks() {
     }
     crate::eval::set_lenient(false);
     crate::value::stop_tracking_thunks();
+    complete
 }
 
 fn run_check_type(filename: &str) {
     crate::eval::reset_error_flag();
     crate::value::start_tracking_thunks();
     evaluate_file(filename);
-    force_unused_thunks();
+    let complete = force_unused_thunks();
     if crate::eval::had_error() {
         eprintln!("FAILED: {} has type errors", filename);
         std::process::exit(1);
-    } else {
+    } else if complete {
         println!("OK: {} has no type errors", filename);
+    } else {
+        // The exit code stays 0 so existing CI setups keep working, but the line
+        // says plainly that the check did not cover everything.
+        println!(
+            "OK (incomplete: stopped after {} values): {} has no type errors in what was checked",
+            MAX_EXTRA_FORCED_THUNKS, filename
+        );
     }
 }
 
