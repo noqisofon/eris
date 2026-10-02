@@ -657,6 +657,33 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
                 &expr.span,
             )
         }
+        ExprKind::Neg(inner) => {
+            let val = eval_expr(inner, env)?;
+            match val {
+                Value::Poison => Ok(Value::Poison),
+                Value::Int(i) => match i.checked_neg() {
+                    Some(n) => Ok(Value::Int(n)),
+                    None => {
+                        report_error(env, expr.span.clone(), "Integer overflow", None, None);
+                        Ok(Value::Poison)
+                    }
+                },
+                Value::Float(f) => Ok(Value::Float(-f)),
+                other => {
+                    report_error(
+                        env,
+                        expr.span.clone(),
+                        &format!(
+                            "Invalid type for unary minus: expected int or float, got a {}",
+                            value_type_name(&other)
+                        ),
+                        None,
+                        None,
+                    );
+                    Ok(Value::Poison)
+                }
+            }
+        }
         ExprKind::LetIn(bindings, body) => {
             let new_env = env.extend();
             for (k, v) in bindings {

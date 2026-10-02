@@ -9,6 +9,10 @@ fn mk_expr<'src, 'b>(kind: ExprKind, e: &mut MapExtra<'src, 'b, &'src str, PExtr
     Expr { kind, span: e.span().into_range() }
 }
 
+fn span_of<'src, 'b, T>(_: T, e: &mut MapExtra<'src, 'b, &'src str, PExtra<'src>>) -> Span {
+    e.span().into_range()
+}
+
 fn mk_app<'src, 'b>((lhs, args): (Expr, Vec<Expr>), e: &mut MapExtra<'src, 'b, &'src str, PExtra<'src>>) -> Expr {
     let span: Span = e.span().into_range();
     args.into_iter().fold(lhs, |acc, arg| Expr {
@@ -86,12 +90,36 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, PExtra<'src>> {
             .then_ignore(just("}"))
             .map(StringPart::Interpolation);
 
+        // `\n \t \r \\ \" \$` inside a double-quoted string. `\$` is how to write a
+        // literal `$` right before a `{` without starting an interpolation. Any
+        // other escape is an error rather than being passed through silently.
+        let escape = just('\\').ignore_then(any().validate(|c: char, e, emitter| match c {
+            'n' => "\n".to_string(),
+            't' => "\t".to_string(),
+            'r' => "\r".to_string(),
+            '\\' => "\\".to_string(),
+            '"' => "\"".to_string(),
+            '$' => "$".to_string(),
+            other => {
+                emitter.emit(Rich::custom(
+                    e.span(),
+                    format!(
+                        "unknown escape sequence '\\{}' (supported: \\n \\t \\r \\\\ \\\" \\$; \
+                         use a single-quoted string for raw text)",
+                        other
+                    ),
+                ));
+                String::new()
+            }
+        }));
+
         let literal_chars = choice((
-            none_of("$\"")
+            none_of("$\"\\")
                 .repeated()
                 .at_least(1)
                 .to_slice()
                 .map(|s: &str| s.to_string()),
+            escape,
             just('$')
                 .then_ignore(just('{').not())
                 .map(|_| "$".to_string()),
@@ -304,11 +332,31 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, PExtra<'src>> {
                 .map(|(args, body)| ExprKind::Lambda(args, Box::new(body)))
         );
 
+        // Unary minus binds tighter than `*` and `/` but looser than application,
+        // so `-f x` is `-(f x)` and `-2 * 3` is `(-2) * 3`. Like function arguments,
+        // list elements do not take a leading `-` (write `[ 1 (-2) ]`), which keeps
+        // `[ a - b ]`-style spacing from changing meaning.
+        let unary = just('-')
+            .padded()
+            .map_with(span_of)
+            .repeated()
+            .collect::<Vec<Span>>()
+            .then(app.clone())
+            .map(|(minuses, operand)| {
+                minuses.into_iter().rev().fold(operand, |inner, minus| {
+                    let span = minus.start..inner.span.end;
+                    Expr {
+                        kind: ExprKind::Neg(Box::new(inner)),
+                        span,
+                    }
+                })
+            });
+
         let op_mul_div = choice((just('*').to(Op::Mul), just('/').to(Op::Div)));
 
-        let product = app
+        let product = unary
             .clone()
-            .then(op_mul_div.padded().then(app).repeated().collect::<Vec<_>>())
+            .then(op_mul_div.padded().then(unary).repeated().collect::<Vec<_>>())
             .map_with(mk_binop);
 
         let op_add_sub = choice((just('+').to(Op::Add), just('-').to(Op::Sub)));
