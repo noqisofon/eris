@@ -447,34 +447,19 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
             for part in parts {
                 match part {
                     StringPart::Literal(s) => result.push_str(s),
-                    StringPart::Interpolation(ident) => {
-                        let Some(thunk) = env.get(ident) else {
-                            let candidates = env.visible_names();
-                            let hint = did_you_mean(ident, candidates.iter());
-                            report_error(
-                                env,
-                                expr.span.clone(),
-                                &format!("Variable '{}' not found", ident),
-                                hint.map(|s| s.as_str()),
-                                None,
-                            );
-                            return Ok(Value::Poison);
-                        };
-
-                        let val = evaluate(thunk)?;
-                        if let Value::Poison = val {
-                            // If it's poison, interpolation fails, just return Poison
-                            return Ok(Value::Poison);
-                        }
+                    StringPart::Interpolation(inner) => {
+                        let val = eval_expr(inner, env)?;
                         match val {
+                            // If it's poison, interpolation fails, just return Poison
+                            Value::Poison => return Ok(Value::Poison),
                             Value::Int(i) => result.push_str(&i.to_string()),
                             Value::Float(f) => result.push_str(&f.to_string()),
                             Value::String(s) => result.push_str(&s),
-                            _ => {
+                            other => {
                                 report_error(
                                     env,
-                                    expr.span.clone(),
-                                    &format!("Cannot interpolate {:?}", val),
+                                    inner.span.clone(),
+                                    &format!("Cannot interpolate {:?}", other),
                                     None,
                                     None,
                                 );

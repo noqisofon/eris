@@ -85,8 +85,9 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, PExtra<'src>> {
             }
         }));
 
+        // `${ ... }` takes any expression: `${x}`, `${a.b}`, `${x + 1}`, `${f 2}`.
         let interp = just("${")
-            .ignore_then(ident_str.clone().padded())
+            .ignore_then(expr.clone().padded())
             .then_ignore(just("}"))
             .map(StringPart::Interpolation);
 
