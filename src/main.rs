@@ -268,7 +268,6 @@ fn run_script(filename: &str) {
 }
 
 fn run_check_type(filename: &str) {
-    crate::eval::reset_error_flag();
     evaluate_file(filename);
     if crate::eval::had_error() {
         eprintln!("FAILED: {} has type errors", filename);
@@ -438,6 +437,27 @@ mod tests {
         assert_eq!(eval_code("true || false"), "true");
         assert_eq!(eval_code("false && true"), "false");
         assert_eq!(eval_code("false || true"), "true");
+    }
+
+    #[test]
+    fn test_int_overflow_is_poison() {
+        assert_eq!(eval_code("9223372036854775807 + 1"), "<poison>");
+        assert_eq!(eval_code("(0 - 9223372036854775807 - 1) / (0 - 1)"), "<poison>");
+    }
+
+    #[test]
+    fn test_interpolation_missing_var_is_error() {
+        assert_eq!(eval_code("\"hi ${nope}\""), "<poison>");
+    }
+
+    #[test]
+    fn test_huge_int_literal_is_syntax_error() {
+        let (ast, errs) = parser()
+            .then_ignore(chumsky::prelude::end())
+            .parse("99999999999999999999")
+            .into_output_errors();
+        assert!(ast.is_none() || !errs.is_empty());
+        assert!(!errs.is_empty());
     }
 
     #[test]
