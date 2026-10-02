@@ -580,6 +580,60 @@ mod tests {
         assert_eq!(outer.visible_names(), ["a", "shadowed"]);
     }
 
+    /// A thunk for `source` evaluated in an environment where `boom` is a native
+    /// function that always fails with the error "boom".
+    fn failing_thunk(source: &str) -> Thunk {
+        let env = Env::new(std::rc::Rc::new(source.to_string()), std::rc::Rc::new("test".to_string()));
+        env.define(
+            "boom".to_string(),
+            Thunk::evaluated(crate::native::native_fn(|_| Err("boom".to_string()))),
+        );
+        Thunk::new(parse_source("test", source).unwrap(), env)
+    }
+
+    #[test]
+    fn test_failed_thunk_reproduces_its_error_instead_of_claiming_recursion() {
+        let thunk = failing_thunk("boom 1");
+        assert_eq!(evaluate(thunk.clone()).unwrap_err(), "boom");
+        // Forcing it again used to report "Infinite recursion detected".
+        assert_eq!(evaluate(thunk.clone()).unwrap_err(), "boom");
+        assert!(thunk.is_unevaluated());
+    }
+
+    #[test]
+    fn test_thunk_depending_on_a_failed_thunk_reports_the_real_error() {
+        let env = Env::new(std::rc::Rc::new(String::new()), std::rc::Rc::new("test".to_string()));
+        env.define(
+            "boom".to_string(),
+            Thunk::evaluated(crate::native::native_fn(|_| Err("boom".to_string()))),
+        );
+        let x = Thunk::new(parse_source("test", "boom 1").unwrap(), env.clone());
+        env.define("x".to_string(), x.clone());
+        let y = Thunk::new(parse_source("test", "x + 1").unwrap(), env);
+
+        assert_eq!(evaluate(x).unwrap_err(), "boom");
+        assert_eq!(evaluate(y).unwrap_err(), "boom");
+    }
+
+    #[test]
+    fn test_genuine_infinite_recursion_is_still_detected() {
+        let env = Env::new(std::rc::Rc::new(String::new()), std::rc::Rc::new("test".to_string()));
+        let x = Thunk::new(parse_source("test", "x").unwrap(), env.clone());
+        env.define("x".to_string(), x.clone());
+
+        assert!(evaluate(x.clone()).unwrap_err().contains("Infinite recursion"));
+        // ...and it keeps being detected, rather than getting stuck in some other state.
+        assert!(evaluate(x).unwrap_err().contains("Infinite recursion"));
+    }
+
+    #[test]
+    fn test_successful_thunk_is_evaluated_once() {
+        let thunk = failing_thunk("1 + 2");
+        assert!(thunk.is_unevaluated());
+        assert!(matches!(evaluate(thunk.clone()), Ok(Value::Int(3))));
+        assert!(!thunk.is_unevaluated());
+    }
+
     #[test]
     fn test_if_else() {
         assert_eq!(eval_code("if true then 1 else 2"), "1");

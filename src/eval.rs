@@ -155,9 +155,19 @@ pub fn evaluate(thunk: Thunk) -> Result<Value, String> {
         _ => unreachable!(),
     };
 
-    let val = eval_expr(&expr, &env)?;
-    *thunk.0.borrow_mut() = ThunkState::Evaluated(val.clone());
-    Ok(val)
+    match eval_expr(&expr, &env) {
+        Ok(val) => {
+            *thunk.0.borrow_mut() = ThunkState::Evaluated(val.clone());
+            Ok(val)
+        }
+        Err(e) => {
+            // Put the thunk back as it was. Leaving it `Evaluating` would make any
+            // later force of it fail with a bogus "Infinite recursion detected"
+            // instead of reproducing the real error.
+            *thunk.0.borrow_mut() = ThunkState::Unevaluated { expr, env };
+            Err(e)
+        }
+    }
 }
 
 /// Default maximum nesting of `eval_expr` calls before evaluation is aborted
@@ -497,7 +507,10 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
                         let thunk = if let Some(t) = map.remove(field) {
                             t
                         } else {
-                            let keys: Vec<String> = map.keys().cloned().collect();
+                            // HashMap order differs from run to run; sort so equally
+                            // close candidates always give the same suggestion.
+                            let mut keys: Vec<String> = map.keys().cloned().collect();
+                            keys.sort();
                             let hint = did_you_mean(field, keys.iter());
                             report_error(
                                 env,
@@ -567,7 +580,10 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
                         let thunk = if let Some(t) = map.remove(field) {
                             t
                         } else {
-                            let keys: Vec<String> = map.keys().cloned().collect();
+                            // HashMap order differs from run to run; sort so equally
+                            // close candidates always give the same suggestion.
+                            let mut keys: Vec<String> = map.keys().cloned().collect();
+                            keys.sort();
                             let hint = did_you_mean(field, keys.iter());
                             report_error(
                                 env,
