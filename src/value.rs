@@ -207,6 +207,27 @@ impl Env {
         self.bindings.borrow_mut().insert(name, thunk);
     }
 
+    /// Every name visible from this scope, innermost first: its own bindings and
+    /// those of all enclosing scopes. Shadowed names appear once. Meant for
+    /// building "did you mean" suggestions, not for lookups.
+    pub fn visible_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut scope: Option<&Env> = Some(self);
+        while let Some(env) = scope {
+            let mut here: Vec<String> = env.bindings.borrow().keys().cloned().collect();
+            // Keep suggestions deterministic when two candidates are equally close.
+            here.sort();
+            for name in here {
+                if seen.insert(name.clone()) {
+                    names.push(name);
+                }
+            }
+            scope = env.parent.as_deref();
+        }
+        names
+    }
+
     pub fn get(&self, name: &str) -> Option<Thunk> {
         if let Some(thunk) = self.bindings.borrow().get(name) {
             return Some(thunk.clone());
