@@ -228,6 +228,109 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
     eval_expr_inner(expr, env)
 }
 
+/// Applies `func` to the (possibly still lazy) argument `arg`.
+///
+/// `env` and `span` are only used to attribute diagnostics (a non-function being
+/// called, a failed destructuring) to the call site.
+pub fn apply_value(func: Value, arg: Thunk, env: &Env, span: &Span) -> Result<Value, String> {
+    if let Value::Poison = func {
+        return Ok(Value::Poison);
+    }
+    match func {
+        Value::NativeClosure(f) => {
+            let arg_val = evaluate(arg)?;
+            if let Value::Poison = arg_val {
+                return Ok(Value::Poison);
+            }
+            f(arg_val)
+        }
+        Value::Closure {
+            args,
+            body,
+            env: closure_env,
+        } => {
+            let call_env = closure_env.extend();
+            match args {
+                Args::Positional(names) => {
+                    call_env.define(names[0].clone(), arg);
+
+                    if names.len() == 1 {
+                        eval_expr(&body, &call_env)
+                    } else {
+                        let remaining_args = Args::Positional(names[1..].to_vec());
+                        Ok(Value::Closure {
+                            args: remaining_args,
+                            body,
+                            env: call_env,
+                        })
+                    }
+                }
+                Args::Destructure { names, ignore_rest } => {
+                    let arg_val = evaluate(arg)?;
+                    if let Value::Poison = arg_val {
+                        return Ok(Value::Poison);
+                    }
+                    match arg_val {
+                        Value::AttrSet(mut map) => {
+                            for name in names {
+                                let val_thunk = map.remove(&name).unwrap_or_else(|| {
+                                    report_error(env, span.clone(), &format!("Missing required attribute '{}' in destructuring", name), None, None);
+                                    Thunk::evaluated(Value::Poison)
+                                });
+                                call_env.define(name, val_thunk);
+                            }
+                            if !ignore_rest && !map.is_empty() {
+                                report_error(
+                                    env,
+                                    span.clone(),
+                                    &format!(
+                                        "Unexpected attributes in destructuring: {:?}",
+                                        map.keys()
+                                    ),
+                                    None,
+                                    None,
+                                );
+                                return Ok(Value::Poison);
+                            }
+                        }
+                        _ => {
+                            report_error(
+                                env,
+                                span.clone(),
+                                "Expected an attribute set for destructuring",
+                                None,
+                                None,
+                            );
+                            return Ok(Value::Poison);
+                        }
+                    }
+                    eval_expr(&body, &call_env)
+                }
+            }
+        }
+        _ => {
+            report_error(
+                env,
+                span.clone(),
+                &format!("Not a function: {:?}", func),
+                None,
+                None,
+            );
+            Ok(Value::Poison)
+        }
+    }
+}
+
+/// Applies `func` to an already-evaluated `arg` from native code, where there is
+/// no call site in any source file to blame diagnostics on.
+pub fn apply(func: &Value, arg: Value) -> Result<Value, String> {
+    let env = Env::new(
+        std::rc::Rc::new(String::new()),
+        std::rc::Rc::new(String::new()),
+    );
+    apply_value(func.clone(), Thunk::evaluated(arg), &env, &(0..0))
+}
+
 fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
     match &expr.kind {
         ExprKind::Bool(b) => Ok(Value::Bool(*b)),
@@ -501,91 +604,12 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
             if let Value::Poison = func_val {
                 return Ok(Value::Poison);
             }
-            let arg_thunk = Thunk::new(*arg.clone(), env.clone());
-
-            match func_val {
-                Value::NativeClosure(f) => {
-                    let arg_val = evaluate(arg_thunk)?;
-                    if let Value::Poison = arg_val {
-                        return Ok(Value::Poison);
-                    }
-                    f(arg_val)
-                }
-                Value::Closure {
-                    args,
-                    body,
-                    env: closure_env,
-                } => {
-                    let call_env = closure_env.extend();
-                    match args {
-                        Args::Positional(names) => {
-                            call_env.define(names[0].clone(), arg_thunk);
-
-                            if names.len() == 1 {
-                                eval_expr(&body, &call_env)
-                            } else {
-                                let remaining_args = Args::Positional(names[1..].to_vec());
-                                Ok(Value::Closure {
-                                    args: remaining_args,
-                                    body,
-                                    env: call_env,
-                                })
-                            }
-                        }
-                        Args::Destructure { names, ignore_rest } => {
-                            let arg_val = evaluate(arg_thunk)?;
-                            if let Value::Poison = arg_val {
-                                return Ok(Value::Poison);
-                            }
-                            match arg_val {
-                                Value::AttrSet(mut map) => {
-                                    for name in names {
-                                        let val_thunk = map.remove(&name).unwrap_or_else(|| {
-                                            report_error(env, expr.span.clone(), &format!("Missing required attribute '{}' in destructuring", name), None, None);
-                                            Thunk::evaluated(Value::Poison)
-                                        });
-                                        call_env.define(name, val_thunk);
-                                    }
-                                    if !ignore_rest && !map.is_empty() {
-                                        report_error(
-                                            env,
-                                            expr.span.clone(),
-                                            &format!(
-                                                "Unexpected attributes in destructuring: {:?}",
-                                                map.keys()
-                                            ),
-                                            None,
-                                            None,
-                                        );
-                                        return Ok(Value::Poison);
-                                    }
-                                }
-                                _ => {
-                                    report_error(
-                                        env,
-                                        expr.span.clone(),
-                                        "Expected an attribute set for destructuring",
-                                        None,
-                                        None,
-                                    );
-                                    return Ok(Value::Poison);
-                                }
-                            }
-                            eval_expr(&body, &call_env)
-                        }
-                    }
-                }
-                _ => {
-                    report_error(
-                        env,
-                        expr.span.clone(),
-                        &format!("Not a function: {:?}", func_val),
-                        None,
-                        None,
-                    );
-                    Ok(Value::Poison)
-                }
-            }
+            apply_value(
+                func_val,
+                Thunk::new(*arg.clone(), env.clone()),
+                env,
+                &expr.span,
+            )
         }
         ExprKind::LetIn(bindings, body) => {
             let new_env = env.extend();

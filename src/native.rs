@@ -1,4 +1,3 @@
-use crate::ast::{Expr, ExprKind};
 use crate::eval::evaluate;
 use crate::value::{Env, Thunk, Value};
 use std::cell::RefCell;
@@ -449,17 +448,7 @@ pub fn build_native_env() -> Value {
                     let mut res = Vec::new();
                     for t in thunks {
                         let arg = evaluate(t)?;
-                        let apply_env = Env::new(Rc::new(String::new()), Rc::new(String::new()));
-                        let app_expr = Expr {
-                            kind: ExprKind::App(
-                                Box::new(Expr { kind: ExprKind::Ident("f".to_string()), span: 0..0 }),
-                                Box::new(Expr { kind: ExprKind::Ident("x".to_string()), span: 0..0 }),
-                            ),
-                            span: 0..0,
-                        };
-                        apply_env.define("f".to_string(), Thunk::evaluated(func.clone()));
-                        apply_env.define("x".to_string(), Thunk::evaluated(arg));
-                        let mapped = crate::eval::eval_expr(&app_expr, &apply_env)?;
+                        let mapped = crate::eval::apply(&func, arg)?;
                         res.push(Thunk::evaluated(mapped));
                     }
                     Ok(Value::List(res))
@@ -477,17 +466,7 @@ pub fn build_native_env() -> Value {
                     let mut res = Vec::new();
                     for t in thunks {
                         let arg = evaluate(t.clone())?;
-                        let apply_env = Env::new(Rc::new(String::new()), Rc::new(String::new()));
-                        let app_expr = Expr {
-                            kind: ExprKind::App(
-                                Box::new(Expr { kind: ExprKind::Ident("f".to_string()), span: 0..0 }),
-                                Box::new(Expr { kind: ExprKind::Ident("x".to_string()), span: 0..0 }),
-                            ),
-                            span: 0..0,
-                        };
-                        apply_env.define("f".to_string(), Thunk::evaluated(func.clone()));
-                        apply_env.define("x".to_string(), Thunk::evaluated(arg));
-                        let is_match = crate::eval::eval_expr(&app_expr, &apply_env)?;
+                        let is_match = crate::eval::apply(&func, arg)?;
                         if let Value::Bool(true) = is_match {
                             res.push(t);
                         }
@@ -509,25 +488,9 @@ pub fn build_native_env() -> Value {
                         let mut acc = init.clone();
                         for t in thunks {
                             let arg = evaluate(t)?;
-                            let apply_env = Env::new(Rc::new(String::new()), Rc::new(String::new()));
-                            let app1 = Expr {
-                                kind: ExprKind::App(
-                                    Box::new(Expr { kind: ExprKind::Ident("f".to_string()), span: 0..0 }),
-                                    Box::new(Expr { kind: ExprKind::Ident("acc".to_string()), span: 0..0 }),
-                                ),
-                                span: 0..0,
-                            };
-                            let app2 = Expr {
-                                kind: ExprKind::App(
-                                    Box::new(app1),
-                                    Box::new(Expr { kind: ExprKind::Ident("x".to_string()), span: 0..0 }),
-                                ),
-                                span: 0..0,
-                            };
-                            apply_env.define("f".to_string(), Thunk::evaluated(func_clone.clone()));
-                            apply_env.define("acc".to_string(), Thunk::evaluated(acc));
-                            apply_env.define("x".to_string(), Thunk::evaluated(arg));
-                            acc = crate::eval::eval_expr(&app2, &apply_env)?;
+                            // `f acc x`: apply to the accumulator first, then to the element.
+                            let partial = crate::eval::apply(&func_clone, acc)?;
+                            acc = crate::eval::apply(&partial, arg)?;
                         }
                         Ok(acc)
                     } else {
