@@ -331,7 +331,8 @@ pub fn build_native_env() -> Value {
                 cached_val.clone()
             } else {
                 let source = std::fs::read_to_string(&module_name).map_err(|_| {
-                    let stdlib_names: Vec<String> = stdlib_cache.keys().cloned().collect();
+                    let mut stdlib_names: Vec<String> = stdlib_cache.keys().cloned().collect();
+                    stdlib_names.sort();
                     let hint = crate::eval::did_you_mean(&module_name, stdlib_names.iter());
                     match hint {
                         Some(h) => format!("Module '{}' not found. Did you mean '{}'?", module_name, h),

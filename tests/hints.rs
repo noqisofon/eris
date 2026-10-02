@@ -78,3 +78,33 @@ fn the_innermost_of_equally_close_names_wins() {
     let (_, err) = run("let apple = 1; in let aple = 3; in appel");
     assert!(err.contains("did you mean 'aple'?"), "stderr: {}", err);
 }
+
+/// `HashMap` iteration order changes between processes, so a single run can be
+/// lucky; run the same script several times and require one stable answer.
+fn hints_over_runs(source: &str, runs: usize) -> std::collections::BTreeSet<String> {
+    (0..runs)
+        .map(|_| {
+            let (_, err) = run(source);
+            let start = err.find("did you mean").expect(&err);
+            err[start..].lines().next().unwrap().to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn field_hint_among_equally_close_names_is_deterministic() {
+    // `print`, `printf` and `println` are all one edit away from `printn`.
+    let hints = hints_over_runs(
+        "{ builtin } -> let fmt = builtin.import \"fmt\"; in fmt.printn \"x\"",
+        12,
+    );
+    assert_eq!(hints.len(), 1, "got different hints: {:?}", hints);
+    assert!(hints.iter().next().unwrap().contains("'print'"), "{:?}", hints);
+}
+
+#[test]
+fn implicit_access_hint_among_equally_close_names_is_deterministic() {
+    let hints = hints_over_runs("with { print = 1; printf = 2; println = 3; } .printn", 12);
+    assert_eq!(hints.len(), 1, "got different hints: {:?}", hints);
+    assert!(hints.iter().next().unwrap().contains("'print'"), "{:?}", hints);
+}
