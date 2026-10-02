@@ -57,12 +57,63 @@ pub enum ThunkState {
 #[derive(Clone)]
 pub struct Thunk(pub Rc<RefCell<ThunkState>>);
 
+thread_local! {
+    static DEBUG_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl fmt::Debug for Thunk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &*self.0.borrow() {
-            ThunkState::Evaluated(val) => write!(f, "{:?}", val),
-            ThunkState::Evaluating => write!(f, "<evaluating>"),
-            ThunkState::Unevaluated { .. } => write!(f, "<thunk>"),
+        // Printing recurses over the value's shape; cut it off rather than
+        // overflow the stack on pathologically deep data.
+        let depth = DEBUG_DEPTH.with(|d| {
+            d.set(d.get() + 1);
+            d.get()
+        });
+        let result = if depth > crate::eval::max_depth() {
+            write!(f, "...")
+        } else {
+            match &*self.0.borrow() {
+                ThunkState::Evaluated(val) => write!(f, "{:?}", val),
+                ThunkState::Evaluating => write!(f, "<evaluating>"),
+                ThunkState::Unevaluated { .. } => write!(f, "<thunk>"),
+            }
+        };
+        DEBUG_DEPTH.with(|d| d.set(d.get() - 1));
+        result
+    }
+}
+
+/// Moves the child thunks of an evaluated list/attrset out of `thunk` (leaving
+/// it empty) so they can be released iteratively.
+fn take_children(thunk: &Rc<RefCell<ThunkState>>, out: &mut Vec<Thunk>) {
+    let Ok(mut state) = thunk.try_borrow_mut() else {
+        return;
+    };
+    if let ThunkState::Evaluated(val) = &mut *state {
+        match val {
+            Value::List(items) => out.append(items),
+            Value::AttrSet(map) => out.extend(map.drain().map(|(_, t)| t)),
+            _ => {}
+        }
+    }
+}
+
+/// Dropping a deeply nested list/attrset would otherwise recurse once per level
+/// (`Vec<Thunk>` -> `Thunk` -> `Vec<Thunk>` ...) and overflow the stack, so
+/// the last owner of a thunk dismantles the structure with an explicit worklist.
+impl Drop for Thunk {
+    fn drop(&mut self) {
+        if Rc::strong_count(&self.0) != 1 {
+            return;
+        }
+        let mut pending = Vec::new();
+        take_children(&self.0, &mut pending);
+        while let Some(child) = pending.pop() {
+            if Rc::strong_count(&child.0) == 1 {
+                take_children(&child.0, &mut pending);
+            }
+            // `child` drops here with its children already detached, so its own
+            // `Drop` finds nothing left to do.
         }
     }
 }

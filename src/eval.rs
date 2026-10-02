@@ -156,6 +156,23 @@ pub fn set_max_depth_for_stack(stack_bytes: usize) {
     MAX_EVAL_DEPTH.store(depth, Ordering::SeqCst);
 }
 
+/// The current nesting limit, shared by `eval_expr` and by every function that
+/// recurses over the *shape* of a value (forcing, hashing, JSON, printing).
+pub fn max_depth() -> usize {
+    MAX_EVAL_DEPTH.load(Ordering::Relaxed)
+}
+
+/// Guards recursion over deeply nested data. Values are built lazily, so a
+/// list nested a million levels deep costs nothing to create but would overflow
+/// the native stack the moment something walks it recursively.
+pub fn check_data_depth(depth: usize) -> Result<(), String> {
+    if depth > max_depth() {
+        Err("Recursion limit exceeded: value is nested too deeply".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 thread_local! {
     static EVAL_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

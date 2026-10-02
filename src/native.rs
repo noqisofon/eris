@@ -14,6 +14,11 @@ where
 }
 
 fn serialize_value(val: Value) -> Result<Vec<u8>, String> {
+    serialize_value_at(val, 0)
+}
+
+fn serialize_value_at(val: Value, depth: usize) -> Result<Vec<u8>, String> {
+    crate::eval::check_data_depth(depth)?;
     let mut out = Vec::new();
     match val {
         Value::String(s) => {
@@ -39,7 +44,7 @@ fn serialize_value(val: Value) -> Result<Vec<u8>, String> {
             out.extend_from_slice(format!("L:{}:", thunks.len()).as_bytes());
             for t in thunks {
                 let v = evaluate(t)?;
-                out.extend_from_slice(&serialize_value(v)?);
+                out.extend_from_slice(&serialize_value_at(v, depth + 1)?);
             }
         }
         Value::AttrSet(map) => {
@@ -52,7 +57,7 @@ fn serialize_value(val: Value) -> Result<Vec<u8>, String> {
                 out.extend_from_slice(format!("S:{}:", k_bytes.len()).as_bytes());
                 out.extend_from_slice(k_bytes);
                 let v = evaluate(map.get(k).unwrap().clone())?;
-                out.extend_from_slice(&serialize_value(v)?);
+                out.extend_from_slice(&serialize_value_at(v, depth + 1)?);
             }
         }
         Value::Closure { .. } | Value::NativeClosure(_) => {
@@ -68,6 +73,11 @@ fn serialize_value(val: Value) -> Result<Vec<u8>, String> {
 /// Convert a value into a string suitable for a builder's environment
 /// variable, the way Nix stringifies derivation attributes.
 fn env_var_string(val: &Value) -> Result<String, String> {
+    env_var_string_at(val, 0)
+}
+
+fn env_var_string_at(val: &Value, depth: usize) -> Result<String, String> {
+    crate::eval::check_data_depth(depth)?;
     match val {
         Value::String(s) => Ok(s.clone()),
         Value::Path(p) => Ok(p.clone()),
@@ -77,7 +87,7 @@ fn env_var_string(val: &Value) -> Result<String, String> {
         Value::List(thunks) => {
             let mut parts = Vec::new();
             for t in thunks {
-                parts.push(env_var_string(&evaluate(t.clone())?)?);
+                parts.push(env_var_string_at(&evaluate(t.clone())?, depth + 1)?);
             }
             Ok(parts.join(" "))
         }
@@ -663,7 +673,8 @@ pub fn build_native_env() -> Value {
     map.insert(
         "json_to".to_string(),
         Thunk::evaluated(native_fn(|v| {
-            fn val_to_json(val: Value) -> Result<serde_json::Value, String> {
+            fn val_to_json(val: Value, depth: usize) -> Result<serde_json::Value, String> {
+                crate::eval::check_data_depth(depth)?;
                 match val {
                     Value::Int(i) => Ok(serde_json::Value::Number(i.into())),
                     Value::Float(f) => {
@@ -679,21 +690,21 @@ pub fn build_native_env() -> Value {
                     Value::List(thunks) => {
                         let mut arr = Vec::new();
                         for t in thunks {
-                            arr.push(val_to_json(evaluate(t)?)?);
+                            arr.push(val_to_json(evaluate(t)?, depth + 1)?);
                         }
                         Ok(serde_json::Value::Array(arr))
                     }
                     Value::AttrSet(map) => {
                         let mut obj = serde_json::Map::new();
                         for (k, thunk) in map {
-                            obj.insert(k, val_to_json(evaluate(thunk)?)?);
+                            obj.insert(k, val_to_json(evaluate(thunk)?, depth + 1)?);
                         }
                         Ok(serde_json::Value::Object(obj))
                     }
                     _ => Err("cannot convert closure/builtin to json".into()),
                 }
             }
-            let j = val_to_json(v)?;
+            let j = val_to_json(v, 0)?;
             Ok(Value::String(j.to_string()))
         })),
     );

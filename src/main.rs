@@ -12,18 +12,29 @@ use clap::{CommandFactory, Parser, Subcommand};
 use std::fs;
 
 fn deep_force(val: Value) -> Result<Value, String> {
+    deep_force_at(val, 0)
+}
+
+fn deep_force_at(val: Value, depth: usize) -> Result<Value, String> {
+    crate::eval::check_data_depth(depth)?;
     match val {
         Value::List(thunks) => {
             let mut res = Vec::new();
             for t in thunks {
-                res.push(Thunk::evaluated(deep_force(evaluate(t.clone())?)?));
+                res.push(Thunk::evaluated(deep_force_at(
+                    evaluate(t.clone())?,
+                    depth + 1,
+                )?));
             }
             Ok(Value::List(res))
         }
         Value::AttrSet(map) => {
             let mut res = std::collections::HashMap::new();
             for (k, t) in map {
-                res.insert(k, Thunk::evaluated(deep_force(evaluate(t.clone())?)?));
+                res.insert(
+                    k,
+                    Thunk::evaluated(deep_force_at(evaluate(t.clone())?, depth + 1)?),
+                );
             }
             Ok(Value::AttrSet(res))
         }
@@ -537,6 +548,66 @@ mod tests {
             .join()
             .unwrap();
         assert_eq!(out, "0");
+    }
+
+    /// A list nested `depth` levels deep, built bottom-up without recursion.
+    fn nested_list(depth: usize) -> Thunk {
+        let mut t = Thunk::evaluated(Value::List(vec![]));
+        for _ in 0..depth {
+            t = Thunk::evaluated(Value::List(vec![t]));
+        }
+        t
+    }
+
+    #[test]
+    fn test_dropping_deeply_nested_value_does_not_overflow() {
+        // Runs on the default (small) test-thread stack on purpose.
+        drop(nested_list(1_000_000));
+
+        let mut t = Thunk::evaluated(Value::List(vec![]));
+        for i in 0..200_000 {
+            let mut m = std::collections::HashMap::new();
+            m.insert(format!("k{}", i), t);
+            t = Thunk::evaluated(Value::AttrSet(m));
+        }
+        drop(t);
+    }
+
+    #[test]
+    fn test_debug_of_deeply_nested_value_is_truncated() {
+        let out = std::thread::Builder::new()
+            .stack_size(INTERPRETER_STACK_SIZE)
+            .spawn(|| format!("{:?}", nested_list(1_000_000)))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(out.contains("..."));
+    }
+
+    #[test]
+    fn test_deep_force_rejects_deeply_nested_value() {
+        let err = std::thread::Builder::new()
+            .stack_size(INTERPRETER_STACK_SIZE)
+            .spawn(|| {
+                let t = nested_list(1_000_000);
+                let v = evaluate(t).unwrap();
+                deep_force(v).err()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(err.unwrap().contains("nested too deeply"));
+    }
+
+    #[test]
+    fn test_deep_force_accepts_moderately_nested_value() {
+        let out = std::thread::Builder::new()
+            .stack_size(INTERPRETER_STACK_SIZE)
+            .spawn(|| deep_force(evaluate(nested_list(1_000)).unwrap()).is_ok())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(out);
     }
 
     #[test]
