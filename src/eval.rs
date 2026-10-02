@@ -28,6 +28,10 @@ pub fn set_lenient(lenient: bool) {
     LENIENT.store(lenient, Ordering::SeqCst);
 }
 
+pub fn is_lenient() -> bool {
+    LENIENT.load(Ordering::SeqCst)
+}
+
 fn report_error(env: &Env, span: std::ops::Range<usize>, msg: &str, hint: Option<&str>, note: Option<&str>) {
     if LENIENT.load(Ordering::SeqCst) {
         return;
