@@ -1,7 +1,6 @@
 use crate::ast::{Expr, ExprKind};
 use crate::eval::evaluate;
 use crate::value::{Env, Thunk, Value};
-use chumsky::Parser;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -270,36 +269,7 @@ pub fn build_native_env() -> Value {
     let mut stdlib_cache = HashMap::new();
 
     let preload_module = |name: &str, source: &str| -> Result<Value, String> {
-        let (opt_ast, errs) = crate::parser::parser()
-            .then_ignore(chumsky::prelude::end())
-            .parse(source)
-            .into_output_errors();
-
-        let has_errors = !errs.is_empty();
-        if has_errors {
-            use ariadne::{Color, Label, Report, ReportKind, Source};
-            for err in errs {
-                Report::build(
-                    ReportKind::Error,
-                    (
-                        name.to_string(),
-                        err.span().into_range().start..err.span().into_range().start,
-                    ),
-                )
-                .with_message(err.to_string())
-                .with_label(
-                    Label::new((name.to_string(), err.span().into_range()))
-                        .with_message(err.reason().to_string())
-                        .with_color(Color::Red),
-                )
-                .finish()
-                .eprint((name.to_string(), Source::from(source)))
-                .unwrap();
-            }
-        }
-
-        let expr = opt_ast
-            .filter(|_| !has_errors)
+        let expr = crate::parser::parse_source(name, source)
             .ok_or_else(|| format!("Parse error in module {}", name))?;
         let env = Env::new(
             std::rc::Rc::new(source.to_string()),
@@ -370,36 +340,7 @@ pub fn build_native_env() -> Value {
                     }
                 })?;
 
-                let (opt_ast, errs) = crate::parser::parser()
-                    .then_ignore(chumsky::prelude::end())
-                    .parse(source.as_str())
-                    .into_output_errors();
-
-                let has_errors = !errs.is_empty();
-                if has_errors {
-                    use ariadne::{Color, Label, Report, ReportKind, Source};
-                    for err in errs {
-                        Report::build(
-                            ReportKind::Error,
-                            (
-                                module_name.clone(),
-                                err.span().into_range().start..err.span().into_range().start,
-                            ),
-                        )
-                        .with_message(err.to_string())
-                        .with_label(
-                            Label::new((module_name.clone(), err.span().into_range()))
-                                .with_message(err.reason().to_string())
-                                .with_color(Color::Red),
-                        )
-                        .finish()
-                        .eprint((module_name.clone(), Source::from(&source)))
-                        .unwrap();
-                    }
-                }
-
-                let expr = opt_ast
-                    .filter(|_| !has_errors)
+                let expr = crate::parser::parse_source(&module_name, &source)
                     .ok_or_else(|| format!("Parse error in module {}", module_name))?;
 
                 let env = Env::new(

@@ -5,9 +5,8 @@ pub mod parser;
 pub mod value;
 
 use crate::eval::evaluate;
-use crate::parser::parser;
+use crate::parser::parse_source;
 use crate::value::{Env, Thunk, Value};
-use chumsky::Parser as _;
 use clap::{CommandFactory, Parser, Subcommand};
 use std::fs;
 
@@ -95,42 +94,6 @@ fn parse_args() -> Command {
     }
 }
 
-/// Parses `source`, printing any syntax errors under `filename`. Returns `None`
-/// (after printing diagnostics) if parsing failed.
-fn parse_source(filename: &str, source: &str) -> Option<crate::ast::Expr> {
-    let (opt_ast, errs) = parser()
-        .then_ignore(chumsky::prelude::end())
-        .parse(source)
-        .into_output_errors();
-
-    let has_errors = !errs.is_empty();
-    if has_errors {
-        use ariadne::{Color, Label, Report, ReportKind, Source};
-        for err in errs {
-            Report::build(
-                ReportKind::Error,
-                (
-                    filename.to_string(),
-                    err.span().into_range().start..err.span().into_range().start,
-                ),
-            )
-            .with_message(err.to_string())
-            .with_label(
-                Label::new((filename.to_string(), err.span().into_range()))
-                    .with_message(err.reason().to_string())
-                    .with_color(Color::Red),
-            )
-            .finish()
-            .eprint((filename.to_string(), Source::from(source)))
-            .unwrap();
-        }
-    }
-
-    // `validate` emits errors while still producing an AST, so a non-empty
-    // error list must stop us even when `opt_ast` is `Some`.
-    if has_errors { None } else { opt_ast }
-}
-
 fn run_check(filename: &str, level: CheckLevel) {
     if level == CheckLevel::Type {
         run_check_type(filename);
@@ -192,34 +155,7 @@ fn evaluate_file(filename: &str) -> Value {
 
         // Evaluate builtin.eris script using include_str!
         let builtin_source = include_str!("builtin.eris");
-        let (builtin_opt, builtin_errs) = parser()
-            .then_ignore(chumsky::prelude::end())
-            .parse(builtin_source)
-            .into_output_errors();
-
-        if !builtin_errs.is_empty() {
-            use ariadne::{Color, Label, Report, ReportKind, Source};
-            for err in builtin_errs {
-                Report::build(
-                    ReportKind::Error,
-                    (
-                        "builtin.eris",
-                        err.span().into_range().start..err.span().into_range().start,
-                    ),
-                )
-                .with_message(err.to_string())
-                .with_label(
-                    Label::new(("builtin.eris", err.span().into_range()))
-                        .with_message(err.reason().to_string())
-                        .with_color(Color::Red),
-                )
-                .finish()
-                .eprint(("builtin.eris", Source::from(builtin_source)))
-                .unwrap();
-            }
-        }
-
-        let builtin_parse = builtin_opt.unwrap_or_else(|| {
+        let builtin_parse = parse_source("builtin.eris", builtin_source).unwrap_or_else(|| {
             std::process::exit(1);
         });
 
@@ -407,32 +343,7 @@ mod tests {
     use super::*;
 
     fn eval_code(source: &str) -> String {
-        let (opt_ast, errs) = parser()
-            .then_ignore(chumsky::prelude::end())
-            .parse(source)
-            .into_output_errors();
-        if !errs.is_empty() {
-            use ariadne::{Color, Label, Report, ReportKind, Source};
-            for err in errs {
-                Report::build(
-                    ReportKind::Error,
-                    (
-                        "test",
-                        err.span().into_range().start..err.span().into_range().start,
-                    ),
-                )
-                .with_message(err.to_string())
-                .with_label(
-                    Label::new(("test", err.span().into_range()))
-                        .with_message(err.reason().to_string())
-                        .with_color(Color::Red),
-                )
-                .finish()
-                .eprint(("test", Source::from(source)))
-                .unwrap();
-            }
-        }
-        let ast = opt_ast.unwrap();
+        let ast = parse_source("test", source).unwrap();
         let env = Env::new(
             std::rc::Rc::new(source.to_string()),
             std::rc::Rc::new("test".to_string()),
@@ -561,11 +472,7 @@ mod tests {
 
     #[test]
     fn test_huge_int_literal_is_syntax_error() {
-        let (ast, errs) = parser()
-            .then_ignore(chumsky::prelude::end())
-            .parse("99999999999999999999")
-            .into_output_errors();
-        let _ = ast;
+        let (_, errs) = crate::parser::parse("99999999999999999999");
         assert!(
             errs.iter().any(|e| e.to_string().contains("out of range")),
             "expected an out-of-range error, got: {:?}",

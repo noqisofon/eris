@@ -1,4 +1,5 @@
 use crate::ast::*;
+use ariadne::{Color, Label, Report, ReportKind, Source};
 use chumsky::input::MapExtra;
 use chumsky::prelude::*;
 
@@ -383,4 +384,44 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, PExtra<'src>> {
         lambda.or(type_annotated).padded().labelled("expression")
     })
     .padded_by(comment.repeated())
+}
+
+/// Parses a whole source text, returning the AST (if one could be built) along
+/// with every syntax error found. Note that an AST can come back *together with*
+/// errors (`validate`-style errors such as an out-of-range literal do not stop
+/// parsing), so callers must not use it unless the error list is empty.
+pub fn parse<'src>(source: &'src str) -> (Option<Expr>, Vec<Rich<'src, char>>) {
+    parser()
+        .then_ignore(end())
+        .parse(source)
+        .into_output_errors()
+}
+
+/// Prints `errs` as ariadne diagnostics against `source`, labelled `filename`.
+pub fn report_syntax_errors(filename: &str, source: &str, errs: &[Rich<'_, char>]) {
+    for err in errs {
+        let span = err.span().into_range();
+        // Failing to write a diagnostic (stderr closed, say) is not worth a panic.
+        let _ = Report::build(ReportKind::Error, (filename.to_string(), span.start..span.start))
+            .with_message(err.to_string())
+            .with_label(
+                Label::new((filename.to_string(), span))
+                    .with_message(err.reason().to_string())
+                    .with_color(Color::Red),
+            )
+            .finish()
+            .eprint((filename.to_string(), Source::from(source)));
+    }
+}
+
+/// Parses `source`, printing any syntax errors under `filename`. Returns `None`
+/// (after printing diagnostics) if there were any errors at all.
+pub fn parse_source(filename: &str, source: &str) -> Option<Expr> {
+    let (ast, errs) = parse(source);
+    if errs.is_empty() {
+        ast
+    } else {
+        report_syntax_errors(filename, source, &errs);
+        None
+    }
 }
