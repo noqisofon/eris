@@ -91,7 +91,8 @@ fn parse_source(filename: &str, source: &str) -> Option<crate::ast::Expr> {
         .parse(source)
         .into_output_errors();
 
-    if !errs.is_empty() {
+    let has_errors = !errs.is_empty();
+    if has_errors {
         use ariadne::{Color, Label, Report, ReportKind, Source};
         for err in errs {
             Report::build(
@@ -113,7 +114,9 @@ fn parse_source(filename: &str, source: &str) -> Option<crate::ast::Expr> {
         }
     }
 
-    opt_ast
+    // `validate` emits errors while still producing an AST, so a non-empty
+    // error list must stop us even when `opt_ast` is `Some`.
+    if has_errors { None } else { opt_ast }
 }
 
 fn run_check(filename: &str, level: CheckLevel) {
@@ -456,8 +459,12 @@ mod tests {
             .then_ignore(chumsky::prelude::end())
             .parse("99999999999999999999")
             .into_output_errors();
-        assert!(ast.is_none() || !errs.is_empty());
-        assert!(!errs.is_empty());
+        let _ = ast;
+        assert!(
+            errs.iter().any(|e| e.to_string().contains("out of range")),
+            "expected an out-of-range error, got: {:?}",
+            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

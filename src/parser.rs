@@ -69,10 +69,15 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, PExtra<'src>> {
             text::keyword("false").to(ExprKind::Bool(false)),
         )));
 
-        let int_val = spanned!(text::int(10).try_map(|s: &str, span| {
-            s.parse::<i64>()
-                .map(ExprKind::Int)
-                .map_err(|_| Rich::custom(span, format!("integer literal '{}' is out of range", s)))
+        let int_val = spanned!(text::int(10).validate(|s: &str, e, emitter| match s.parse::<i64>() {
+            Ok(i) => ExprKind::Int(i),
+            Err(_) => {
+                emitter.emit(Rich::custom(
+                    e.span(),
+                    format!("integer literal '{}' is out of range for a 64-bit integer", s),
+                ));
+                ExprKind::Int(0)
+            }
         }));
 
         let interp = just("${")
