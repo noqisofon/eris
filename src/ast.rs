@@ -35,7 +35,8 @@ pub enum ExprKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StringPart {
     Literal(String),
-    Interpolation(String),
+    /// `${ expr }` inside a double-quoted string.
+    Interpolation(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq)]

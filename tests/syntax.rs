@@ -179,3 +179,89 @@ fn unterminated_string_after_an_escaped_quote_is_a_syntax_error() {
 fn escapes_work_in_the_string_part_of_an_interpolation_too() {
     assert_eq!(printed_string(r#""[${x}]\n""#), "[4]\n\n");
 }
+
+// ---- interpolation of arbitrary expressions -------------------------------
+
+/// Like `printed`, but with a record `o` and nested attribute `o.a.b` in scope.
+fn interpolated(template: &str) -> String {
+    let o = run_script(&format!(
+        "{{ builtin }} -> let p = (builtin.import \"fmt\").println; x = 4; \
+         o = {{ a = {{ b = \"deep\"; }}; n = 7; }}; f = |n| -> n + 1; in [ (p {}) ]",
+        template
+    ));
+    assert_eq!(o.code, Some(0), "`{}` failed: {}", template, o.stderr);
+    o.stdout
+}
+
+#[test]
+fn interpolation_still_takes_a_plain_variable() {
+    assert_eq!(interpolated(r#""plain ${x}""#), "plain 4\n");
+    assert_eq!(interpolated(r#""${x}${x}""#), "44\n");
+}
+
+#[test]
+fn interpolation_takes_field_access() {
+    assert_eq!(interpolated(r#""n=${o.n}""#), "n=7\n");
+    assert_eq!(interpolated(r#""${o.a.b}""#), "deep\n");
+}
+
+#[test]
+fn interpolation_takes_arithmetic_and_calls() {
+    assert_eq!(interpolated(r#""${x + 1} ${x * 2 - 1} ${-x}""#), "5 7 -4\n");
+    assert_eq!(interpolated(r#""${f 2} ${f (f 2)}""#), "3 4\n");
+    assert_eq!(interpolated(r#""${1.5 + 1}""#), "2.5\n");
+}
+
+#[test]
+fn interpolation_takes_if_and_nested_strings_and_braces() {
+    assert_eq!(interpolated(r#""${ if x > 3 then "big" else "small" }""#), "big\n");
+    assert_eq!(interpolated(r#""nested ${ "inner ${x}" } done""#), "nested inner 4 done\n");
+    // A `}` inside the expression does not end the interpolation early.
+    assert_eq!(interpolated(r#""${ { k = 1; }.k }""#), "1\n");
+}
+
+#[test]
+fn interpolation_allows_spaces_inside_the_braces() {
+    assert_eq!(interpolated(r#""${ x } ${  o.n  }""#), "4 7\n");
+}
+
+#[test]
+fn escaped_dollar_still_stops_interpolation_of_an_expression() {
+    assert_eq!(interpolated(r#""\${o.n} stays""#), "${o.n} stays\n");
+    assert_eq!(interpolated(r#""$ ${x} $""#), "$ 4 $\n");
+}
+
+#[test]
+fn interpolating_a_missing_field_reports_the_field_with_a_hint() {
+    let o = run_script(
+        "{ builtin } -> let o = { name = 1; }; in \"v ${o.nmae}\"",
+    );
+    assert_eq!(o.code, Some(1));
+    assert!(o.stderr.contains("Field 'nmae' not found"), "stderr: {}", o.stderr);
+    assert!(o.stderr.contains("did you mean 'name'?"), "stderr: {}", o.stderr);
+}
+
+#[test]
+fn interpolating_something_that_is_not_text_or_a_number_is_an_error() {
+    let o = run_script("{ builtin } -> let l = [1]; in \"v ${l}\"");
+    assert_eq!(o.code, Some(1));
+    assert!(o.stderr.contains("Cannot interpolate"), "stderr: {}", o.stderr);
+    let o = run_script("\"v ${true}\"");
+    assert_eq!(o.code, Some(1));
+}
+
+#[test]
+fn errors_inside_an_interpolated_expression_are_reported() {
+    let o = run_script("\"v ${1 / 0}\"");
+    assert_eq!(o.code, Some(1));
+    assert!(o.stderr.contains("Division by zero"), "stderr: {}", o.stderr);
+}
+
+#[test]
+fn malformed_interpolations_are_syntax_errors() {
+    for src in ["\"v ${}\"", "\"v ${x +}\"", "\"v ${x\""] {
+        let o = run_script(src);
+        assert_eq!(o.code, Some(1), "{} should fail", src);
+        assert!(o.stderr.contains("Error"), "stderr: {}", o.stderr);
+    }
+}
