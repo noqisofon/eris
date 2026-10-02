@@ -18,7 +18,25 @@ pub fn reset_error_flag() {
     HAD_ERROR.store(false, Ordering::SeqCst);
 }
 
+static LENIENT: AtomicBool = AtomicBool::new(false);
+
+/// In lenient mode only `::` type-annotation errors are reported (and counted);
+/// every other error is swallowed. `eris check --level type` uses it while
+/// forcing values the program never asked for, where, say, a division by zero in
+/// dead code is none of the type checker's business.
+pub fn set_lenient(lenient: bool) {
+    LENIENT.store(lenient, Ordering::SeqCst);
+}
+
 fn report_error(env: &Env, span: std::ops::Range<usize>, msg: &str, hint: Option<&str>, note: Option<&str>) {
+    if LENIENT.load(Ordering::SeqCst) {
+        return;
+    }
+    report_type_error(env, span, msg, hint, note);
+}
+
+/// Like `report_error`, but also reported in lenient mode.
+fn report_type_error(env: &Env, span: std::ops::Range<usize>, msg: &str, hint: Option<&str>, note: Option<&str>) {
     HAD_ERROR.store(true, Ordering::SeqCst);
     let mut builder = Report::build(ReportKind::Error, (env.filename.to_string(), span.clone()))
         .with_message(msg)
@@ -244,7 +262,7 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
                     ];
                     let known_strings: Vec<String> = known.iter().map(|s| s.to_string()).collect();
                     let hint = did_you_mean(type_name, known_strings.iter());
-                    report_error(
+                    report_type_error(
                         env,
                         expr.span.clone(),
                         &format!("Unknown type '{}'", type_name),
@@ -258,7 +276,7 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
                     if actual == expected {
                         Ok(val)
                     } else {
-                        report_error(
+                        report_type_error(
                             env,
                             expr.span.clone(),
                             &format!(

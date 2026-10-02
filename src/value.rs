@@ -118,9 +118,44 @@ impl Drop for Thunk {
     }
 }
 
+thread_local! {
+    /// When `Some`, every lazily created thunk is recorded here so that
+    /// `eris check --level type` can force the ones the program never needed.
+    static TRACKED_THUNKS: RefCell<Option<Vec<Thunk>>> = const { RefCell::new(None) };
+}
+
+/// Starts recording every thunk created from now on (see `TRACKED_THUNKS`).
+pub fn start_tracking_thunks() {
+    TRACKED_THUNKS.with(|t| *t.borrow_mut() = Some(Vec::new()));
+}
+
+/// The `index`-th recorded thunk, if there is one yet. Thunks created while
+/// earlier ones are being forced are appended, so walking the indices until
+/// this returns `None` visits everything.
+pub fn tracked_thunk(index: usize) -> Option<Thunk> {
+    TRACKED_THUNKS.with(|t| t.borrow().as_ref().and_then(|v| v.get(index).cloned()))
+}
+
+/// Stops recording and releases the recorded thunks.
+pub fn stop_tracking_thunks() {
+    let tracked = TRACKED_THUNKS.with(|t| t.borrow_mut().take());
+    drop(tracked);
+}
+
 impl Thunk {
     pub fn new(expr: Expr, env: Env) -> Self {
-        Thunk(Rc::new(RefCell::new(ThunkState::Unevaluated { expr, env })))
+        let thunk = Thunk(Rc::new(RefCell::new(ThunkState::Unevaluated { expr, env })));
+        TRACKED_THUNKS.with(|t| {
+            if let Some(tracked) = t.borrow_mut().as_mut() {
+                tracked.push(thunk.clone());
+            }
+        });
+        thunk
+    }
+
+    /// Whether this thunk has not been forced yet.
+    pub fn is_unevaluated(&self) -> bool {
+        matches!(&*self.0.borrow(), ThunkState::Unevaluated { .. })
     }
 
     pub fn evaluated(val: Value) -> Self {
