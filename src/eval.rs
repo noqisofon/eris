@@ -140,6 +140,38 @@ fn resolve_type_name(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Parses and evaluates `source` as a module named `name`. Syntax errors are
+/// printed as diagnostics; the returned error only says that parsing failed.
+pub fn eval_module_source(name: &str, source: &str) -> Result<Value, String> {
+    let expr = crate::parser::parse_source(name, source)
+        .ok_or_else(|| format!("Parse error in module {}", name))?;
+    let env = Env::new(
+        std::rc::Rc::new(source.to_string()),
+        std::rc::Rc::new(name.to_string()),
+    );
+    evaluate(Thunk::new(expr, env))
+}
+
+/// How the host hands values to a script or module: if `val` is a closure taking
+/// a destructured argument list (`{ builtin } -> ...`), calls it with whichever of
+/// its parameter names appear in `provided`, bound to those values. Parameters
+/// that are not provided stay undefined (and fail if used); a value that is not
+/// a closure comes back unchanged.
+pub fn inject_destructured(val: Value, provided: &[(&str, &Value)]) -> Result<Value, String> {
+    let Value::Closure { args, body, env } = val else {
+        return Ok(val);
+    };
+    let call_env = env.extend();
+    if let Args::Destructure { names, .. } = args {
+        for name in names {
+            if let Some((_, value)) = provided.iter().find(|(n, _)| *n == name) {
+                call_env.define(name, Thunk::evaluated((*value).clone()));
+            }
+        }
+    }
+    eval_expr(&body, &call_env)
+}
+
 pub fn evaluate(thunk: Thunk) -> Result<Value, String> {
     {
         let b = thunk.0.borrow();

@@ -115,6 +115,25 @@ fn run_check(filename: &str, level: CheckLevel) {
     }
 }
 
+/// Builds the `builtin` module: evaluates the bundled `builtin.eris`, which is a
+/// closure over `{ __native }`, and applies it to the native function table.
+fn load_builtin_module() -> Value {
+    let native_val = crate::native::build_native_env();
+    let builtin_closure = crate::eval::eval_module_source("builtin.eris", include_str!("builtin.eris"))
+        .unwrap_or_else(|e| {
+            eprintln!("Runtime error evaluating builtin.eris: {}", e);
+            std::process::exit(1);
+        });
+    if !matches!(builtin_closure, Value::Closure { .. }) {
+        eprintln!("builtin.eris did not return a closure");
+        std::process::exit(1);
+    }
+    crate::eval::inject_destructured(builtin_closure, &[("__native", &native_val)]).unwrap_or_else(|e| {
+        eprintln!("Runtime error applying __native to builtin.eris: {}", e);
+        std::process::exit(1);
+    })
+}
+
 /// Parses and fully evaluates `filename`, forcing every value it produces so
 /// that any `expr :: type` annotation along the way gets checked. (`check
 /// --level type` then goes on to force the values nothing needed; see
@@ -144,67 +163,14 @@ fn evaluate_file(filename: &str) -> Value {
         std::process::exit(1);
     });
 
-    if let Value::Closure {
-        args,
-        body,
-        env: closure_env,
-    } = result_val
-    {
-        // Produce the __native AttrSet from native.rs
-        let native_val = crate::native::build_native_env();
-
-        // Evaluate builtin.eris script using include_str!
-        let builtin_source = include_str!("builtin.eris");
-        let builtin_parse = parse_source("builtin.eris", builtin_source).unwrap_or_else(|| {
-            std::process::exit(1);
-        });
-
-        let builtin_env = Env::new(
-            std::rc::Rc::new(builtin_source.to_string()),
-            std::rc::Rc::new("builtin.eris".to_string()),
-        );
-        let builtin_thunk = Thunk::new(builtin_parse, builtin_env);
-        let builtin_closure = evaluate(builtin_thunk).unwrap_or_else(|e| {
-            eprintln!("Runtime error evaluating builtin.eris: {}", e);
-            std::process::exit(1);
-        });
-
-        // Pass { __native } to builtin_closure to get the `builtin` module
-        let builtin_val = if let Value::Closure {
-            args: b_args,
-            body: b_body,
-            env: b_env,
-        } = builtin_closure
-        {
-            let call_env = b_env.extend();
-            if let crate::ast::Args::Destructure { names, .. } = b_args {
-                for name in names {
-                    if name == "__native" {
-                        call_env.define(name, Thunk::evaluated(native_val.clone()));
-                    }
-                }
-            }
-            crate::eval::eval_expr(&b_body, &call_env).unwrap_or_else(|e| {
-                eprintln!("Runtime error applying __native to builtin.eris: {}", e);
+    // A script written as `{ builtin } -> ...` is handed the `builtin` module.
+    if let Value::Closure { .. } = result_val {
+        let builtin_val = load_builtin_module();
+        result_val = crate::eval::inject_destructured(result_val, &[("builtin", &builtin_val)])
+            .unwrap_or_else(|e| {
+                eprintln!("Runtime error: {}", e);
                 std::process::exit(1);
-            })
-        } else {
-            eprintln!("builtin.eris did not return a closure");
-            std::process::exit(1);
-        };
-
-        let call_env = closure_env.extend();
-        if let crate::ast::Args::Destructure { names, .. } = args {
-            for name in names {
-                if name == "builtin" {
-                    call_env.define(name, Thunk::evaluated(builtin_val.clone()));
-                }
-            }
-        }
-        result_val = crate::eval::eval_expr(&body, &call_env).unwrap_or_else(|e| {
-            eprintln!("Runtime error: {}", e);
-            std::process::exit(1);
-        });
+            });
     }
 
     deep_force(result_val).unwrap_or_else(|e| {
