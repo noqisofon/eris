@@ -567,6 +567,20 @@ mod tests {
     }
 
     #[test]
+    fn test_visible_names_walks_enclosing_scopes_without_duplicates() {
+        let outer = Env::new(std::rc::Rc::new(String::new()), std::rc::Rc::new(String::new()));
+        outer.define("a".to_string(), Thunk::evaluated(Value::Int(1)));
+        outer.define("shadowed".to_string(), Thunk::evaluated(Value::Int(1)));
+        let inner = outer.extend();
+        inner.define("b".to_string(), Thunk::evaluated(Value::Int(2)));
+        inner.define("shadowed".to_string(), Thunk::evaluated(Value::Int(2)));
+
+        // Innermost scope first, each scope's names sorted, shadowed names once.
+        assert_eq!(inner.visible_names(), ["b", "shadowed", "a"]);
+        assert_eq!(outer.visible_names(), ["a", "shadowed"]);
+    }
+
+    #[test]
     fn test_if_else() {
         assert_eq!(eval_code("if true then 1 else 2"), "1");
         assert_eq!(eval_code("if false then 1 else 2"), "2");

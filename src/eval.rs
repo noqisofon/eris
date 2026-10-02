@@ -407,8 +407,7 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
                     StringPart::Literal(s) => result.push_str(s),
                     StringPart::Interpolation(ident) => {
                         let Some(thunk) = env.get(ident) else {
-                            let bindings = env.bindings.borrow();
-                            let candidates: Vec<String> = bindings.keys().cloned().collect();
+                            let candidates = env.visible_names();
                             let hint = did_you_mean(ident, candidates.iter());
                             report_error(
                                 env,
@@ -470,8 +469,7 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
             if let Some(thunk) = env.get(name) {
                 evaluate(thunk)
             } else {
-                let bindings = env.bindings.borrow();
-                let candidates: Vec<String> = bindings.keys().cloned().collect();
+                let candidates = env.visible_names();
                 let hint = did_you_mean(name, candidates.iter());
                 let note = if name == "builtins" {
                     Some("consider receiving 'builtins' as a function argument, e.g., `{ builtins } ->`")
