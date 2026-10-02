@@ -2,7 +2,7 @@ use crate::ast::*;
 use crate::value::*;
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static HAD_ERROR: AtomicBool = AtomicBool::new(false);
 
@@ -138,12 +138,23 @@ pub fn evaluate(thunk: Thunk) -> Result<Value, String> {
     Ok(val)
 }
 
-/// Maximum nesting of `eval_expr` calls before evaluation is aborted with an
-/// error. Eris has no tail-call elimination, so deep (or infinite) recursion
-/// would otherwise overflow the native stack and abort the process. The limit
-/// has to stay within what `main`'s interpreter thread stack can hold, even in
-/// unoptimised builds.
-pub const MAX_EVAL_DEPTH: usize = 10_000;
+/// Default maximum nesting of `eval_expr` calls before evaluation is aborted
+/// with an error. Eris has no tail-call elimination, so deep (or infinite)
+/// recursion would otherwise overflow the native stack and abort the process.
+pub const DEFAULT_MAX_EVAL_DEPTH: usize = 10_000;
+
+/// Stack bytes budgeted per `eval_expr` nesting level, with ~2x headroom over
+/// what was measured (about 30KB per level unoptimised, 2.6KB optimised).
+pub const STACK_BYTES_PER_DEPTH: usize = if cfg!(debug_assertions) { 48 * 1024 } else { 6 * 1024 };
+
+static MAX_EVAL_DEPTH: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_EVAL_DEPTH);
+
+/// Sizes the depth limit to the stack of the thread that will evaluate, so a
+/// smaller-than-intended stack yields a clean error instead of an overflow.
+pub fn set_max_depth_for_stack(stack_bytes: usize) {
+    let depth = (stack_bytes / STACK_BYTES_PER_DEPTH).clamp(1, DEFAULT_MAX_EVAL_DEPTH);
+    MAX_EVAL_DEPTH.store(depth, Ordering::SeqCst);
+}
 
 thread_local! {
     static EVAL_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -165,7 +176,7 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
         d.get()
     });
     let _guard = DepthGuard;
-    if depth > MAX_EVAL_DEPTH {
+    if depth > MAX_EVAL_DEPTH.load(Ordering::Relaxed) {
         report_error(
             env,
             expr.span.clone(),

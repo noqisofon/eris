@@ -61,6 +61,7 @@ enum CheckLevel {
     Type,
 }
 
+#[derive(Clone)]
 enum Command {
     Run(String),
     Check(String, CheckLevel),
@@ -280,11 +281,27 @@ fn run_check_type(filename: &str) {
     }
 }
 
-/// Stack size of the interpreter thread. The evaluator is recursive, and an
-/// unoptimised build burns tens of KB of stack per eris-level call, so this
-/// must be large enough for `eval::MAX_EVAL_DEPTH` in a debug build. The memory
-/// is only reserved, not committed, until it is actually used.
-const INTERPRETER_STACK_SIZE: usize = 512 * 1024 * 1024;
+/// Preferred stack size of the interpreter thread. The evaluator is recursive,
+/// and an unoptimised build burns tens of KB of stack per eris-level call, so
+/// debug builds need far more than release builds to reach
+/// `eval::DEFAULT_MAX_EVAL_DEPTH`. The memory is only reserved, not committed,
+/// until it is actually used.
+const INTERPRETER_STACK_SIZE: usize = if cfg!(debug_assertions) {
+    512 * 1024 * 1024
+} else {
+    64 * 1024 * 1024
+};
+
+/// Smallest stack worth running on; below this we give up rather than crash later.
+const MIN_INTERPRETER_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+/// The process's address-space limit (`ulimit -v`), if one is set and we can
+/// find out about it. Only Linux exposes this without extra dependencies.
+fn address_space_limit() -> Option<usize> {
+    let limits = fs::read_to_string("/proc/self/limits").ok()?;
+    let line = limits.lines().find(|l| l.starts_with("Max address space"))?;
+    line.split_whitespace().find_map(|w| w.parse::<usize>().ok())
+}
 
 fn main() {
     let command = parse_args();
@@ -292,15 +309,37 @@ fn main() {
     // Chumsky 0.12 in debug mode uses massive stack space that overflows the default 1MB Windows stack,
     // and the recursive evaluator needs far more than the main thread offers.
     // Instead of forcing users to build in release mode, we spawn the interpreter in a big-stack thread.
-    std::thread::Builder::new()
-        .stack_size(INTERPRETER_STACK_SIZE)
-        .spawn(move || match command {
-            Command::Run(filename) => run_script(&filename),
-            Command::Check(filename, level) => run_check(&filename, level),
-        })
-        .unwrap()
-        .join()
-        .unwrap();
+    //
+    // Reserving that much address space can fail (e.g. under `ulimit -v` or in a small
+    // container), so retry with progressively smaller stacks, scaling the recursion
+    // limit down with whatever we actually got.
+    //
+    // A successful reservation is not enough under an address-space limit: a stack that eats
+    // most of it leaves nothing for the heap. So never ask for more than an eighth of the limit (the allocator also reserves arena space for the thread).
+    let mut stack_size = match address_space_limit() {
+        Some(limit) => INTERPRETER_STACK_SIZE
+            .min(limit / 8)
+            .max(MIN_INTERPRETER_STACK_SIZE),
+        None => INTERPRETER_STACK_SIZE,
+    };
+    let handle = loop {
+        crate::eval::set_max_depth_for_stack(stack_size);
+        let command = command.clone();
+        match std::thread::Builder::new()
+            .stack_size(stack_size)
+            .spawn(move || match command {
+                Command::Run(filename) => run_script(&filename),
+                Command::Check(filename, level) => run_check(&filename, level),
+            }) {
+            Ok(handle) => break handle,
+            Err(_) if stack_size / 2 >= MIN_INTERPRETER_STACK_SIZE => stack_size /= 2,
+            Err(err) => {
+                eprintln!("Failed to start the interpreter thread: {}", err);
+                std::process::exit(1);
+            }
+        }
+    };
+    handle.join().unwrap();
 }
 
 #[cfg(test)]
@@ -485,6 +524,19 @@ mod tests {
             .join()
             .unwrap();
         assert_eq!(out, "<poison>");
+    }
+
+    #[test]
+    fn test_moderate_recursion_still_works() {
+        let out = std::thread::Builder::new()
+            .stack_size(INTERPRETER_STACK_SIZE)
+            .spawn(|| {
+                eval_code("let f = |n| -> if n == 0 then 0 else f (n - 1); in f 1000")
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(out, "0");
     }
 
     #[test]
