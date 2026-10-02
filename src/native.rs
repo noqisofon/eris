@@ -1,6 +1,5 @@
 use crate::eval::evaluate;
-use crate::value::{Env, Thunk, Value};
-use std::cell::RefCell;
+use crate::value::{Thunk, Value};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -242,7 +241,9 @@ fn remove_store_entry(path: &std::path::Path) {
 
 pub fn build_native_env() -> Value {
     let mut map = HashMap::new();
-    let native_ref = Rc::new(RefCell::new(None));
+    // The `import` function needs the finished native table (which contains
+    // `import` itself), so it is filled in once at the end.
+    let native_cell: Rc<std::cell::OnceCell<Value>> = Rc::new(std::cell::OnceCell::new());
 
     // -- abort --
     map.insert(
@@ -262,62 +263,28 @@ pub fn build_native_env() -> Value {
     );
 
     // -- import --
-    let native_ref_clone = native_ref.clone();
+    let native_for_import = native_cell.clone();
 
     // Cache for standard library modules to prevent parsing deep in the stack
     let mut stdlib_cache = HashMap::new();
 
-    let preload_module = |name: &str, source: &str| -> Result<Value, String> {
-        let expr = crate::parser::parse_source(name, source)
-            .ok_or_else(|| format!("Parse error in module {}", name))?;
-        let env = Env::new(
-            std::rc::Rc::new(source.to_string()),
-            std::rc::Rc::new(name.to_string()),
-        );
-        let thunk = Thunk::new(expr, env);
-        Ok(evaluate(thunk)?)
-    };
-
-    stdlib_cache.insert(
-        "fmt".to_string(),
-        preload_module("fmt", include_str!("fmt.eris")).unwrap(),
-    );
-    stdlib_cache.insert(
-        "list".to_string(),
-        preload_module("list", include_str!("list.eris")).unwrap(),
-    );
-    stdlib_cache.insert(
-        "string".to_string(),
-        preload_module("string", include_str!("string.eris")).unwrap(),
-    );
-    stdlib_cache.insert(
-        "attr".to_string(),
-        preload_module("attr", include_str!("attr.eris")).unwrap(),
-    );
-    stdlib_cache.insert(
-        "fs".to_string(),
-        preload_module("fs", include_str!("fs.eris")).unwrap(),
-    );
-    stdlib_cache.insert(
-        "json".to_string(),
-        preload_module("json", include_str!("json.eris")).unwrap(),
-    );
-    stdlib_cache.insert(
-        "path".to_string(),
-        preload_module("path", include_str!("path.eris")).unwrap(),
-    );
-    stdlib_cache.insert(
-        "child_process".to_string(),
-        preload_module("child_process", include_str!("child_process.eris")).unwrap(),
-    );
-    stdlib_cache.insert(
-        "hash".to_string(),
-        preload_module("hash", include_str!("hash.eris")).unwrap(),
-    );
-    stdlib_cache.insert(
-        "build".to_string(),
-        preload_module("build", include_str!("build.eris")).unwrap(),
-    );
+    const STDLIB_MODULES: &[(&str, &str)] = &[
+        ("fmt", include_str!("fmt.eris")),
+        ("list", include_str!("list.eris")),
+        ("string", include_str!("string.eris")),
+        ("attr", include_str!("attr.eris")),
+        ("fs", include_str!("fs.eris")),
+        ("json", include_str!("json.eris")),
+        ("path", include_str!("path.eris")),
+        ("child_process", include_str!("child_process.eris")),
+        ("hash", include_str!("hash.eris")),
+        ("build", include_str!("build.eris")),
+    ];
+    for (name, source) in STDLIB_MODULES {
+        let module = crate::eval::eval_module_source(name, source)
+            .unwrap_or_else(|e| panic!("bundled module '{}' failed to load: {}", name, e));
+        stdlib_cache.insert(name.to_string(), module);
+    }
 
     map.insert(
         "import".to_string(),
@@ -340,36 +307,14 @@ pub fn build_native_env() -> Value {
                     }
                 })?;
 
-                let expr = crate::parser::parse_source(&module_name, &source)
-                    .ok_or_else(|| format!("Parse error in module {}", module_name))?;
-
-                let env = Env::new(
-                    std::rc::Rc::new(source.to_string()),
-                    std::rc::Rc::new(module_name.to_string()),
-                );
-                let thunk = Thunk::new(expr, env);
-                evaluate(thunk)?
+                crate::eval::eval_module_source(&module_name, &source)?
             };
 
-            if let Value::Closure {
-                args,
-                body,
-                env: closure_env,
-            } = result_val
-            {
-                let call_env = closure_env.extend();
-                if let crate::ast::Args::Destructure { names, .. } = args {
-                    for name in names {
-                        if name == "__native" {
-                            let nv = native_ref_clone.borrow().clone().unwrap();
-                            call_env.define(name, Thunk::evaluated(nv));
-                        }
-                    }
-                }
-                crate::eval::eval_expr(&body, &call_env)
-            } else {
-                Ok(result_val)
-            }
+            // Modules written as `{ __native } -> ...` get the native table.
+            let native = native_for_import
+                .get()
+                .ok_or("native table is not initialised yet")?;
+            crate::eval::inject_destructured(result_val, &[("__native", native)])
         })),
     );
 
@@ -1173,7 +1118,9 @@ pub fn build_native_env() -> Value {
     );
 
     let native_val = Value::AttrSet(map);
-    *native_ref.borrow_mut() = Some(native_val.clone());
+    native_cell
+        .set(native_val.clone())
+        .unwrap_or_else(|_| unreachable!("the native table is only set once"));
 
     native_val
 }
