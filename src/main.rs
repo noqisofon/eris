@@ -91,7 +91,8 @@ fn parse_source(filename: &str, source: &str) -> Option<crate::ast::Expr> {
         .parse(source)
         .into_output_errors();
 
-    if !errs.is_empty() {
+    let has_errors = !errs.is_empty();
+    if has_errors {
         use ariadne::{Color, Label, Report, ReportKind, Source};
         for err in errs {
             Report::build(
@@ -113,7 +114,9 @@ fn parse_source(filename: &str, source: &str) -> Option<crate::ast::Expr> {
         }
     }
 
-    opt_ast
+    // `validate` emits errors while still producing an AST, so a non-empty
+    // error list must stop us even when `opt_ast` is `Some`.
+    if has_errors { None } else { opt_ast }
 }
 
 fn run_check(filename: &str, level: CheckLevel) {
@@ -268,7 +271,6 @@ fn run_script(filename: &str) {
 }
 
 fn run_check_type(filename: &str) {
-    crate::eval::reset_error_flag();
     evaluate_file(filename);
     if crate::eval::had_error() {
         eprintln!("FAILED: {} has type errors", filename);
@@ -438,6 +440,31 @@ mod tests {
         assert_eq!(eval_code("true || false"), "true");
         assert_eq!(eval_code("false && true"), "false");
         assert_eq!(eval_code("false || true"), "true");
+    }
+
+    #[test]
+    fn test_int_overflow_is_poison() {
+        assert_eq!(eval_code("9223372036854775807 + 1"), "<poison>");
+        assert_eq!(eval_code("(0 - 9223372036854775807 - 1) / (0 - 1)"), "<poison>");
+    }
+
+    #[test]
+    fn test_interpolation_missing_var_is_error() {
+        assert_eq!(eval_code("\"hi ${nope}\""), "<poison>");
+    }
+
+    #[test]
+    fn test_huge_int_literal_is_syntax_error() {
+        let (ast, errs) = parser()
+            .then_ignore(chumsky::prelude::end())
+            .parse("99999999999999999999")
+            .into_output_errors();
+        let _ = ast;
+        assert!(
+            errs.iter().any(|e| e.to_string().contains("out of range")),
+            "expected an out-of-range error, got: {:?}",
+            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

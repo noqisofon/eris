@@ -131,7 +131,8 @@ pub fn build_native_env() -> Value {
             .parse(source)
             .into_output_errors();
 
-        if !errs.is_empty() {
+        let has_errors = !errs.is_empty();
+        if has_errors {
             use ariadne::{Color, Label, Report, ReportKind, Source};
             for err in errs {
                 Report::build(
@@ -153,7 +154,9 @@ pub fn build_native_env() -> Value {
             }
         }
 
-        let expr = opt_ast.ok_or_else(|| format!("Parse error in module {}", name))?;
+        let expr = opt_ast
+            .filter(|_| !has_errors)
+            .ok_or_else(|| format!("Parse error in module {}", name))?;
         let env = Env::new(
             std::rc::Rc::new(source.to_string()),
             std::rc::Rc::new(name.to_string()),
@@ -228,7 +231,8 @@ pub fn build_native_env() -> Value {
                     .parse(source.as_str())
                     .into_output_errors();
 
-                if !errs.is_empty() {
+                let has_errors = !errs.is_empty();
+                if has_errors {
                     use ariadne::{Color, Label, Report, ReportKind, Source};
                     for err in errs {
                         Report::build(
@@ -250,8 +254,9 @@ pub fn build_native_env() -> Value {
                     }
                 }
 
-                let expr =
-                    opt_ast.ok_or_else(|| format!("Parse error in module {}", module_name))?;
+                let expr = opt_ast
+                    .filter(|_| !has_errors)
+                    .ok_or_else(|| format!("Parse error in module {}", module_name))?;
 
                 let env = Env::new(
                     std::rc::Rc::new(source.to_string()),

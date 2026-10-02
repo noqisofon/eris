@@ -213,10 +213,19 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                 match part {
                     StringPart::Literal(s) => result.push_str(s),
                     StringPart::Interpolation(ident) => {
-                        let thunk = env.get(ident).unwrap_or_else(|| {
-                            // Fallback for interpolation identifier missing
-                            Thunk::evaluated(Value::Poison)
-                        });
+                        let Some(thunk) = env.get(ident) else {
+                            let bindings = env.bindings.borrow();
+                            let candidates: Vec<String> = bindings.keys().cloned().collect();
+                            let hint = did_you_mean(ident, candidates.iter());
+                            report_error(
+                                env,
+                                expr.span.clone(),
+                                &format!("Variable '{}' not found", ident),
+                                hint.map(|s| s.as_str()),
+                                None,
+                            );
+                            return Ok(Value::Poison);
+                        };
 
                         let val = evaluate(thunk)?;
                         if let Value::Poison = val {
@@ -547,15 +556,39 @@ pub fn eval_expr(expr: &Expr, env: &Env) -> Result<Value, String> {
                 return Ok(Value::Poison);
             }
             match (left, op, right) {
-                (Value::Int(a), Op::Add, Value::Int(b)) => Ok(Value::Int(a + b)),
-                (Value::Int(a), Op::Sub, Value::Int(b)) => Ok(Value::Int(a - b)),
-                (Value::Int(a), Op::Mul, Value::Int(b)) => Ok(Value::Int(a * b)),
+                (Value::Int(a), Op::Add, Value::Int(b)) => match a.checked_add(b) {
+                    Some(n) => Ok(Value::Int(n)),
+                    None => {
+                        report_error(env, expr.span.clone(), "Integer overflow", None, None);
+                        Ok(Value::Poison)
+                    }
+                },
+                (Value::Int(a), Op::Sub, Value::Int(b)) => match a.checked_sub(b) {
+                    Some(n) => Ok(Value::Int(n)),
+                    None => {
+                        report_error(env, expr.span.clone(), "Integer overflow", None, None);
+                        Ok(Value::Poison)
+                    }
+                },
+                (Value::Int(a), Op::Mul, Value::Int(b)) => match a.checked_mul(b) {
+                    Some(n) => Ok(Value::Int(n)),
+                    None => {
+                        report_error(env, expr.span.clone(), "Integer overflow", None, None);
+                        Ok(Value::Poison)
+                    }
+                },
                 (Value::Int(a), Op::Div, Value::Int(b)) => {
                     if b == 0 {
                         report_error(env, expr.span.clone(), "Division by zero", None, None);
                         Ok(Value::Poison)
                     } else {
-                        Ok(Value::Int(a / b))
+                        match a.checked_div(b) {
+                            Some(n) => Ok(Value::Int(n)),
+                            None => {
+                                report_error(env, expr.span.clone(), "Integer overflow", None, None);
+                                Ok(Value::Poison)
+                            }
+                        }
                     }
                 }
                 (Value::Float(a), Op::Add, Value::Float(b)) => Ok(Value::Float(a + b)),
