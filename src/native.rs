@@ -99,24 +99,41 @@ fn env_var_string_at(val: &Value, depth: usize) -> Result<String, String> {
     }
 }
 
-/// Feeds a digest of what is at `path` into `hasher`: the bytes of a file, the
-/// sorted entries of a directory (recursively), or the target of a symlink.
-/// A derivation's output has to depend on the *contents* of everything it reads,
-/// not just on the names it was given.
+/// Feeds a digest of what is at `path` into `hasher`: the bytes of a file (plus
+/// whether it is executable), or the sorted entries of a directory, recursively.
+/// Symlinks are followed, so changing the file a link points at changes the
+/// digest; a broken link or a link cycle is an error. A derivation's output has
+/// to depend on the *contents* of everything it reads, not just on its names.
+///
+/// `ancestors` holds the canonical paths of the directories currently being
+/// walked, which is how a cycle through symlinks is noticed.
 fn hash_path_contents(
     path: &std::path::Path,
     hasher: &mut blake3::Hasher,
     depth: usize,
+    ancestors: &mut Vec<std::path::PathBuf>,
 ) -> Result<(), String> {
     crate::eval::check_data_depth(depth)?;
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|e| format!("cannot read input '{}': {}", path.display(), e))?;
-    if meta.file_type().is_symlink() {
-        let target = std::fs::read_link(path)
-            .map_err(|e| format!("cannot read link '{}': {}", path.display(), e))?;
-        hasher.update(b"L");
-        hasher.update(target.to_string_lossy().as_bytes());
-    } else if meta.is_dir() {
+    // `metadata` (unlike `symlink_metadata`) follows links.
+    let meta = std::fs::metadata(path).map_err(|e| {
+        format!(
+            "cannot read input '{}': {} (a broken symlink?)",
+            path.display(),
+            e
+        )
+    })?;
+    if meta.is_dir() {
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|e| format!("cannot resolve '{}': {}", path.display(), e))?;
+        if ancestors.contains(&canonical) {
+            return Err(format!(
+                "symlink cycle detected at '{}' (resolves to '{}')",
+                path.display(),
+                canonical.display()
+            ));
+        }
+        ancestors.push(canonical);
+
         let mut names = Vec::new();
         for entry in std::fs::read_dir(path)
             .map_err(|e| format!("cannot read directory '{}': {}", path.display(), e))?
@@ -127,15 +144,25 @@ fn hash_path_contents(
         names.sort();
         hasher.update(format!("D:{}:", names.len()).as_bytes());
         for name in names {
-            let name_bytes = name.to_string_lossy();
+            // Hash the raw bytes where we can, so names that are not valid UTF-8
+            // do not collapse onto each other.
+            #[cfg(unix)]
+            let name_bytes = std::os::unix::ffi::OsStrExt::as_bytes(name.as_os_str()).to_vec();
+            #[cfg(not(unix))]
+            let name_bytes = name.to_string_lossy().into_owned().into_bytes();
             hasher.update(format!("{}:", name_bytes.len()).as_bytes());
-            hasher.update(name_bytes.as_bytes());
-            hash_path_contents(&path.join(&name), hasher, depth + 1)?;
+            hasher.update(&name_bytes);
+            hash_path_contents(&path.join(&name), hasher, depth + 1, ancestors)?;
         }
+        ancestors.pop();
     } else {
         let mut file = std::fs::File::open(path)
             .map_err(|e| format!("cannot read input '{}': {}", path.display(), e))?;
-        hasher.update(format!("F:{}:", meta.len()).as_bytes());
+        #[cfg(unix)]
+        let executable = std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
+        #[cfg(not(unix))]
+        let executable = false;
+        hasher.update(format!("F:{}:{}:", if executable { "x" } else { "-" }, meta.len()).as_bytes());
         std::io::copy(&mut file, hasher)
             .map_err(|e| format!("cannot read input '{}': {}", path.display(), e))?;
     }
@@ -1137,7 +1164,7 @@ pub fn build_native_env() -> Value {
                 hasher.update(format!("\0env:{}={}", k, v).as_bytes());
             }
             hasher.update(b"\0builder\0");
-            hash_path_contents(&builder_path, &mut hasher, 0)
+            hash_path_contents(&builder_path, &mut hasher, 0, &mut Vec::new())
                 .map_err(|e| format!("build.derivation: {}", e))?;
             let mut attr_names: Vec<&String> = attrs.keys().collect();
             attr_names.sort();
@@ -1148,7 +1175,7 @@ pub fn build_native_env() -> Value {
             for p in &input_paths {
                 hasher.update(format!("\0input:{}:", p.len()).as_bytes());
                 hasher.update(p.as_bytes());
-                hash_path_contents(std::path::Path::new(p), &mut hasher, 0)
+                hash_path_contents(std::path::Path::new(p), &mut hasher, 0, &mut Vec::new())
                     .map_err(|e| format!("build.derivation: {}", e))?;
             }
             let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD

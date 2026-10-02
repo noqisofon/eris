@@ -221,3 +221,123 @@ fn missing_builder_is_reported() {
 
     assert!(err.contains("not found in PATH"), "stderr was: {}", err);
 }
+
+#[test]
+fn editing_the_target_of_a_symlinked_input_changes_the_hash() {
+    let sb = Sandbox::new();
+    sb.write("real.sh", "echo one > \"$out\"\n");
+    std::os::unix::fs::symlink(sb.path("real.sh"), sb.path("link.sh")).unwrap();
+    let a = attrs("t", &sb.path("link.sh"));
+    let (hash1, _, _) = sb.build(&a, &[]).unwrap();
+
+    sb.write("real.sh", "echo two > \"$out\"\n");
+    let (hash2, cached2, out2) = sb.build(&a, &[]).unwrap();
+
+    assert_ne!(hash1, hash2);
+    assert_eq!(cached2, "false");
+    assert_eq!(fs::read_to_string(&out2).unwrap(), "two\n");
+}
+
+#[test]
+fn editing_the_target_of_a_symlinked_builder_changes_the_hash() {
+    let sb = Sandbox::new();
+    let real = sb.path("real-builder");
+    fs::write(&real, "#!/bin/sh\necho b-one > \"$out\"\n").unwrap();
+    fs::set_permissions(&real, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink(&real, sb.path("mybuilder")).unwrap();
+    let a = format!(r#"name = "t"; builder = p'{}';"#, sb.path("mybuilder").display());
+    let (hash1, _, _) = sb.build(&a, &[]).unwrap();
+
+    fs::write(&real, "#!/bin/sh\necho b-two > \"$out\"\n").unwrap();
+    let (hash2, cached2, out2) = sb.build(&a, &[]).unwrap();
+
+    assert_ne!(hash1, hash2);
+    assert_eq!(cached2, "false");
+    assert_eq!(fs::read_to_string(&out2).unwrap(), "b-two\n");
+}
+
+#[test]
+fn builder_resolved_through_path_is_hashed_by_its_real_contents() {
+    // `sh` is looked up on the builder's PATH; point that PATH at a directory
+    // whose `sh` is a symlink to a script we then edit.
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path("bin")).unwrap();
+    let real = sb.path("real-sh");
+    fs::write(&real, "#!/bin/sh\necho p-one > \"$out\"\n").unwrap();
+    fs::set_permissions(&real, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink(&real, sb.path("bin/mysh")).unwrap();
+    let a = format!(
+        r#"name = "t"; builder = "mysh"; PATH = "{}:/usr/bin:/bin";"#,
+        sb.path("bin").display()
+    );
+    let (hash1, _, _) = sb.build(&a, &[]).unwrap();
+
+    fs::write(&real, "#!/bin/sh\necho p-two > \"$out\"\n").unwrap();
+    let (hash2, _, out2) = sb.build(&a, &[]).unwrap();
+
+    assert_ne!(hash1, hash2);
+    assert_eq!(fs::read_to_string(&out2).unwrap(), "p-two\n");
+}
+
+#[test]
+fn editing_a_symlinked_file_inside_a_path_directory_changes_the_hash() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path("src")).unwrap();
+    sb.write("real.txt", "1");
+    std::os::unix::fs::symlink(sb.path("real.txt"), sb.path("src/a.txt")).unwrap();
+    let script = sb.write("build.sh", "cat \"$1\"/a.txt > \"$out\"\n");
+    let a = format!(
+        r#"name = "t"; builder = "/bin/sh"; args = [ p'{}' p'{}' ];"#,
+        script.display(),
+        sb.path("src").display()
+    );
+    let (hash1, _, _) = sb.build(&a, &[]).unwrap();
+
+    sb.write("real.txt", "2");
+    let (hash2, _, out2) = sb.build(&a, &[]).unwrap();
+
+    assert_ne!(hash1, hash2);
+    assert_eq!(fs::read_to_string(&out2).unwrap(), "2");
+}
+
+#[test]
+fn broken_symlink_input_is_an_error() {
+    let sb = Sandbox::new();
+    std::os::unix::fs::symlink(sb.path("does-not-exist"), sb.path("dangling")).unwrap();
+    let a = format!(
+        r#"name = "t"; builder = "/bin/sh"; args = [ p'{}' ];"#,
+        sb.path("dangling").display()
+    );
+    let err = sb.build(&a, &[]).unwrap_err();
+
+    assert!(err.contains("broken symlink"), "stderr was: {}", err);
+}
+
+#[test]
+fn symlink_cycle_in_an_input_directory_is_an_error() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path("src")).unwrap();
+    std::os::unix::fs::symlink(sb.path("src"), sb.path("src/loop")).unwrap();
+    let script = sb.write("build.sh", "echo hi > \"$out\"\n");
+    let a = format!(
+        r#"name = "t"; builder = "/bin/sh"; args = [ p'{}' p'{}' ];"#,
+        script.display(),
+        sb.path("src").display()
+    );
+    let err = sb.build(&a, &[]).unwrap_err();
+
+    assert!(err.contains("symlink cycle"), "stderr was: {}", err);
+}
+
+#[test]
+fn making_an_input_script_executable_changes_the_hash() {
+    let sb = Sandbox::new();
+    let script = sb.write("build.sh", "echo hi > \"$out\"\n");
+    let a = attrs("t", &script);
+    let (hash1, _, _) = sb.build(&a, &[]).unwrap();
+
+    fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let (hash2, _, _) = sb.build(&a, &[]).unwrap();
+
+    assert_ne!(hash1, hash2);
+}
