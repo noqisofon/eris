@@ -2,6 +2,7 @@ pub mod ast;
 pub mod eval;
 pub mod native;
 pub mod parser;
+pub mod scope;
 pub mod value;
 
 use crate::eval::evaluate;
@@ -58,7 +59,8 @@ enum Commands {
     /// Check a script without running it
     Check {
         file: String,
-        /// `syntax` only parses the file; `type` also runs it and checks
+        /// `syntax` parses the file and checks that every variable is bound,
+        /// without running it; `type` does that, then runs the file and checks
         /// every `expr :: type` annotation as it gets forced.
         #[arg(long, value_enum, default_value_t = CheckLevel::Syntax)]
         level: CheckLevel,
@@ -94,24 +96,35 @@ fn parse_args() -> Command {
     }
 }
 
-fn run_check(filename: &str, level: CheckLevel) {
-    if level == CheckLevel::Type {
-        run_check_type(filename);
-        return;
-    }
-
+/// Reads and parses `filename`, then checks that every variable is bound. Prints
+/// diagnostics and exits with status 1 if either step finds a problem; the AST is
+/// returned only for a file that is clean.
+fn read_and_check(filename: &str) -> crate::ast::Expr {
     let source = fs::read_to_string(filename).unwrap_or_else(|err| {
         eprintln!("Error reading file {}: {}", filename, err);
         std::process::exit(1);
     });
+    let Some(ast) = parse_source(filename, &source) else {
+        std::process::exit(1);
+    };
+    let scope_errors = crate::scope::check(&ast);
+    if !scope_errors.is_empty() {
+        crate::scope::report(filename, &source, &scope_errors);
+        eprintln!("FAILED: {} has scope errors", filename);
+        std::process::exit(1);
+    }
+    ast
+}
 
-    match parse_source(filename, &source) {
-        Some(_) => {
-            println!("OK: {} has no syntax errors", filename);
-        }
-        None => {
-            std::process::exit(1);
-        }
+fn run_check(filename: &str, level: CheckLevel) {
+    // Both levels start with the same static checks. `--level type` then goes on
+    // to run the script, and does not get that far if a variable is unbound.
+    read_and_check(filename);
+
+    if level == CheckLevel::Type {
+        run_check_type(filename);
+    } else {
+        println!("OK: {} has no syntax or scope errors", filename);
     }
 }
 
