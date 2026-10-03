@@ -2,6 +2,7 @@ pub mod ast;
 pub mod eval;
 pub mod native;
 pub mod parser;
+pub mod scope;
 pub mod value;
 
 use crate::eval::evaluate;
@@ -58,7 +59,8 @@ enum Commands {
     /// Check a script without running it
     Check {
         file: String,
-        /// `syntax` only parses the file; `type` also runs it and checks
+        /// `syntax` parses the file and checks that every variable is bound,
+        /// without running it; `type` does that, then runs the file and checks
         /// every `expr :: type` annotation as it gets forced.
         #[arg(long, value_enum, default_value_t = CheckLevel::Syntax)]
         level: CheckLevel,
@@ -94,24 +96,35 @@ fn parse_args() -> Command {
     }
 }
 
-fn run_check(filename: &str, level: CheckLevel) {
-    if level == CheckLevel::Type {
-        run_check_type(filename);
-        return;
-    }
-
+/// Reads and parses `filename`, then checks that every variable is bound. Prints
+/// diagnostics and exits with status 1 if either step finds a problem; the AST is
+/// returned only for a file that is clean.
+fn read_and_check(filename: &str) -> crate::ast::Expr {
     let source = fs::read_to_string(filename).unwrap_or_else(|err| {
         eprintln!("Error reading file {}: {}", filename, err);
         std::process::exit(1);
     });
+    let Some(ast) = parse_source(filename, &source) else {
+        std::process::exit(1);
+    };
+    let scope_errors = crate::scope::check(&ast);
+    if !scope_errors.is_empty() {
+        crate::scope::report(filename, &source, &scope_errors);
+        eprintln!("FAILED: {} has scope errors", filename);
+        std::process::exit(1);
+    }
+    ast
+}
 
-    match parse_source(filename, &source) {
-        Some(_) => {
-            println!("OK: {} has no syntax errors", filename);
-        }
-        None => {
-            std::process::exit(1);
-        }
+fn run_check(filename: &str, level: CheckLevel) {
+    // Both levels start with the same static checks. `--level type` then goes on
+    // to run the script, and does not get that far if a variable is unbound.
+    read_and_check(filename);
+
+    if level == CheckLevel::Type {
+        run_check_type(filename);
+    } else {
+        println!("OK: {} has no syntax or scope errors", filename);
     }
 }
 
@@ -598,6 +611,74 @@ mod tests {
         assert!(thunk.is_unevaluated());
         assert!(matches!(evaluate(thunk.clone()), Ok(Value::Int(3))));
         assert!(!thunk.is_unevaluated());
+    }
+
+    /// `leaf + 1 + 1 + ... + 1`, `depth` levels deep, built without recursion.
+    fn deep_left_chain(depth: usize, leaf: crate::ast::Expr) -> crate::ast::Expr {
+        use crate::ast::{Expr, ExprKind, Op};
+        let one = || Expr { kind: ExprKind::Int(1), span: 0..0 };
+        let mut e = leaf;
+        for _ in 0..depth {
+            e = Expr {
+                kind: ExprKind::BinOp(Box::new(e), Op::Add, Box::new(one())),
+                span: 0..0,
+            };
+        }
+        e
+    }
+
+    #[test]
+    fn test_scope_check_does_not_recurse_over_deep_expressions() {
+        use crate::ast::{Expr, ExprKind};
+        let unbound = Expr { kind: ExprKind::Ident("nope".to_string()), span: 5..9 };
+        let ast = deep_left_chain(300_000, unbound);
+
+        // 256KB of stack holds only a couple of thousand recursive frames, so this
+        // only works if the walk keeps its own stack.
+        let found = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn_scoped(s, || {
+                    crate::scope::check(&ast)
+                        .into_iter()
+                        .map(|e| e.name)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        assert_eq!(found, ["nope"]);
+
+        // Dropping an expression this deep recurses, so do it on a big stack.
+        std::thread::Builder::new()
+            .stack_size(INTERPRETER_STACK_SIZE)
+            .spawn(move || drop(ast))
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_scope_check_accepts_a_deep_chain_with_nothing_unbound() {
+        use crate::ast::{Expr, ExprKind};
+        let leaf = Expr { kind: ExprKind::Int(1), span: 0..1 };
+        let ast = deep_left_chain(300_000, leaf);
+        let n = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn_scoped(s, || crate::scope::check(&ast).len())
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        assert_eq!(n, 0);
+        std::thread::Builder::new()
+            .stack_size(INTERPRETER_STACK_SIZE)
+            .spawn(move || drop(ast))
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

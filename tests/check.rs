@@ -91,8 +91,11 @@ fn other_errors_in_unused_code_are_not_type_errors() {
     // neither should the type check.
     let o = check_type("let x = 1 / 0; in 0");
     assert!(o.ok, "stderr: {}", o.stderr);
+    // An unbound variable is a different matter: the static scope check that
+    // both `check` levels start with reports it, whether or not it is used.
     let o = check_type("let x = nope; in 0");
-    assert!(o.ok, "stderr: {}", o.stderr);
+    assert!(!o.ok);
+    assert!(o.stderr.contains("Variable 'nope' not found"), "stderr: {}", o.stderr);
 }
 
 #[test]
