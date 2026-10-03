@@ -222,13 +222,23 @@ pub fn parser<'src>() -> impl Parser<'src, &'src str, Expr, PExtra<'src>> {
                     .map(|(bindings, body)| ExprKind::LetIn(bindings, Box::new(body)))
             );
 
-            let with_expr = spanned!(
-                just("with")
-                    .padded()
-                    .ignore_then(expr.clone())
-                    .then(expr.clone())
-                    .map(|(obj, body)| ExprKind::With(Box::new(obj), Box::new(body)))
-            );
+            // `with obj; body` ends the scope object with `;`, so the body can be any
+            // expression. Without the `;` the object is read as far as it can go
+            // (it swallows anything that looks like a function argument), which is
+            // why the older `with obj .field` form needs a body starting with `.`.
+            // The `;` form is tried first and, if there is no `;`, we fall back.
+            let with_semi = just("with")
+                .padded()
+                .ignore_then(expr.clone())
+                .then_ignore(just(';').padded())
+                .then(expr.clone());
+            let with_plain = just("with")
+                .padded()
+                .ignore_then(expr.clone())
+                .then(expr.clone());
+            let with_expr = spanned!(with_semi
+                .or(with_plain)
+                .map(|(obj, body)| ExprKind::With(Box::new(obj), Box::new(body))));
 
             let if_expr = spanned!(
                 just("if")
