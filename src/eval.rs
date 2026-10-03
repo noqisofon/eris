@@ -1,6 +1,8 @@
 use crate::ast::*;
+use crate::compare::Equality;
 use crate::value::*;
 use ariadne::{Color, Label, Report, ReportKind, Source};
+use std::cmp::Ordering as Cmp;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -106,6 +108,12 @@ pub fn did_you_mean<'a>(
         }
     }
     best
+}
+
+/// "a list", "an int".
+fn with_article(type_name: &str) -> String {
+    let article = if type_name.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+    format!("{} {}", article, type_name)
 }
 
 fn value_type_name(val: &Value) -> &'static str {
@@ -727,6 +735,43 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
             if let Value::Poison = right {
                 return Ok(Value::Poison);
             }
+            if matches!(op, Op::Eq | Op::Neq) {
+                return match crate::compare::values_equal(&left, &right)? {
+                    Equality::Equal => Ok(Value::Bool(*op == Op::Eq)),
+                    Equality::NotEqual => Ok(Value::Bool(*op == Op::Neq)),
+                    Equality::Poison => Ok(Value::Poison),
+                    Equality::Function => {
+                        report_error(env, expr.span.clone(), "Cannot compare functions", None, None);
+                        Ok(Value::Poison)
+                    }
+                };
+            }
+            if matches!(op, Op::Lt | Op::Lte | Op::Gt | Op::Gte) {
+                return match crate::compare::compare_order(&left, &right) {
+                    // Unordered (a NaN): every ordering operator is false.
+                    Ok(None) => Ok(Value::Bool(false)),
+                    Ok(Some(ord)) => Ok(Value::Bool(match op {
+                        Op::Lt => ord == Cmp::Less,
+                        Op::Lte => ord != Cmp::Greater,
+                        Op::Gt => ord == Cmp::Greater,
+                        _ => ord != Cmp::Less,
+                    })),
+                    Err(()) => {
+                        report_error(
+                            env,
+                            expr.span.clone(),
+                            &format!(
+                                "Cannot order {} and {} (only numbers and strings can be ordered)",
+                                with_article(value_type_name(&left)),
+                                with_article(value_type_name(&right))
+                            ),
+                            None,
+                            None,
+                        );
+                        Ok(Value::Poison)
+                    }
+                };
+            }
             match (left, op, right) {
                 (Value::Int(a), Op::Add, Value::Int(b)) => match a.checked_add(b) {
                     Some(n) => Ok(Value::Int(n)),
@@ -775,26 +820,6 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
                 (Value::Float(a), Op::Mul, Value::Int(b)) => Ok(Value::Float(a * b as f64)),
                 (Value::Int(a), Op::Div, Value::Float(b)) => Ok(Value::Float(a as f64 / b)),
                 (Value::Float(a), Op::Div, Value::Int(b)) => Ok(Value::Float(a / b as f64)),
-
-                (Value::Int(a), Op::Eq, Value::Int(b)) => Ok(Value::Bool(a == b)),
-                (Value::Int(a), Op::Neq, Value::Int(b)) => Ok(Value::Bool(a != b)),
-                (Value::Int(a), Op::Lt, Value::Int(b)) => Ok(Value::Bool(a < b)),
-                (Value::Int(a), Op::Lte, Value::Int(b)) => Ok(Value::Bool(a <= b)),
-                (Value::Int(a), Op::Gt, Value::Int(b)) => Ok(Value::Bool(a > b)),
-                (Value::Int(a), Op::Gte, Value::Int(b)) => Ok(Value::Bool(a >= b)),
-
-                (Value::Float(a), Op::Eq, Value::Float(b)) => Ok(Value::Bool(a == b)),
-                (Value::Float(a), Op::Neq, Value::Float(b)) => Ok(Value::Bool(a != b)),
-                (Value::Float(a), Op::Lt, Value::Float(b)) => Ok(Value::Bool(a < b)),
-                (Value::Float(a), Op::Lte, Value::Float(b)) => Ok(Value::Bool(a <= b)),
-                (Value::Float(a), Op::Gt, Value::Float(b)) => Ok(Value::Bool(a > b)),
-                (Value::Float(a), Op::Gte, Value::Float(b)) => Ok(Value::Bool(a >= b)),
-
-                (Value::String(a), Op::Eq, Value::String(b)) => Ok(Value::Bool(a == b)),
-                (Value::String(a), Op::Neq, Value::String(b)) => Ok(Value::Bool(a != b)),
-
-                (Value::Bool(a), Op::Eq, Value::Bool(b)) => Ok(Value::Bool(a == b)),
-                (Value::Bool(a), Op::Neq, Value::Bool(b)) => Ok(Value::Bool(a != b)),
 
                 _ => {
                     report_error(

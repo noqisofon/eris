@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod compare;
 pub mod eval;
 pub mod native;
 pub mod parser;
