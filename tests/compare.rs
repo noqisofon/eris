@@ -228,10 +228,10 @@ fn functions_cannot_be_compared() {
 
 #[test]
 fn only_numbers_and_strings_can_be_ordered() {
-    assert_error("true < false", "Cannot order a bool and a bool");
-    assert_error("[ 1 ] < [ 2 ]", "Cannot order a list and a list");
-    assert_error("{ a = 1; } < { a = 2; }", "Cannot order an attrset and an attrset");
-    assert_error("p'a' < p'b'", "Cannot order a path and a path");
+    assert_error("true < false", "Cannot order two bool values");
+    assert_error("[ 1 ] < [ 2 ]", "Cannot order two list values");
+    assert_error("{ a = 1; } < { a = 2; }", "Cannot order two attrset values");
+    assert_error("p'a' < p'b'", "Cannot order two path values");
     assert_error(r#""a" < 1"#, "Cannot order a string and an int");
     assert_error(r#"1 >= "a""#, "Cannot order an int and a string");
     assert_error("f < f", "Cannot order");
@@ -288,10 +288,78 @@ fn absurdly_nested_lists_end_in_the_nesting_limit_error_not_a_crash() {
 }
 
 #[test]
-fn a_value_containing_itself_ends_in_the_nesting_limit_error_not_a_hang() {
-    assert_error("let s = [ 1 s ]; in s == s", "nested too deeply");
-    assert_error("let a = [ 1 a ]; b = [ 1 b ]; in a == b", "nested too deeply");
-    assert_error("let s = { x = s; }; in s == s", "nested too deeply");
+fn a_value_containing_itself_can_be_compared_with_itself() {
+    // Each pair of elements is compared once, so a cycle ends instead of hanging.
+    assert_all(&[
+        ("let s = [ 1 s ]; in s == s", "true"),
+        ("let s = { x = s; }; in s == s", "true"),
+        ("let s = [ 1 s ]; in s != s", "false"),
+    ]);
+}
+
+#[test]
+fn cyclic_values_of_the_same_shape_are_equal_and_of_different_shapes_are_not() {
+    assert_all(&[
+        ("let a = [ 1 a ]; b = [ 1 b ]; in a == b", "true"),
+        ("let a = { x = a; }; b = { x = b; }; in a == b", "true"),
+        ("let a = [ 1 a ]; b = [ 2 b ]; in a == b", "false"),
+        ("let a = [ 1 a ]; b = [ 1 [ 1 b ] ]; in a == b", "true"),
+        ("let a = [ 1 a ]; b = [ 1 [ 2 b ] ]; in a == b", "false"),
+    ]);
+}
+
+#[test]
+fn a_cyclic_value_differing_early_is_decided_before_the_cycle_is_reached() {
+    assert_all(&[("let s = [ 1 s ]; t = [ 2 t ]; in s == t", "false")]);
+}
+
+/// `let l0 = [ 1 ]; m0 = [ 1 ]; l1 = [ l0 l0 ]; m1 = [ m0 m0 ]; ... in <body>`.
+fn shared_levels(levels: usize, body: &str) -> String {
+    let mut bindings = String::from("l0 = [ 1 ]; m0 = [ 1 ]; ");
+    for i in 1..=levels {
+        bindings.push_str(&format!(
+            "l{i} = [ l{p} l{p} ]; m{i} = [ m{p} m{p} ]; ",
+            i = i,
+            p = i - 1
+        ));
+    }
+    format!("let {} in {}", bindings, body)
+}
+
+#[test]
+fn heavily_shared_structures_compare_in_linear_time() {
+    // Each level refers to the level below it twice, so walked as a tree this is
+    // 2^40 steps. Compared pair by pair it is 40.
+    assert_all(&[
+        (&shared_levels(40, "l40 == l40"), "true"),
+        (&shared_levels(40, "l40 != l40"), "false"),
+        // Two separately built structures with the same sharing are just as fast.
+        (&shared_levels(40, "l40 == m40"), "true"),
+        (&shared_levels(40, "l40 == m39"), "false"),
+    ]);
+}
+
+#[test]
+fn a_shared_element_is_still_compared_normally_the_first_time() {
+    // Sharing never changes what a comparison means: a NaN is not equal to
+    // itself, a function cannot be compared, and a broken element fails.
+    assert_all(&[
+        ("let l = [ nan ]; in l == l", "false"),
+        ("let l = [ nan 1 ]; in [ l l ] == [ l l ]", "false"),
+        ("[ nan ] == [ nan ]", "false"),
+        ("nan == nan", "false"),
+    ]);
+    assert_error("let g = [ f ]; in g == g", "Cannot compare functions");
+    assert_error("let g = [ f ]; h = [ f ]; in g == h", "Cannot compare functions");
+    assert_error("let g = [ nope ]; in g == g", "Variable 'nope' not found");
+    assert_error("let g = [ (1 / 0) ]; in [ g ] == [ g ]", "Division by zero");
+}
+
+#[test]
+fn distinct_elements_that_fail_still_poison_the_comparison() {
+    let o = eval("[ nope ] == [ nope ]");
+    assert_eq!(o.code, Some(1));
+    assert!(o.stderr.contains("Variable 'nope' not found"), "stderr: {}", o.stderr);
 }
 
 #[test]

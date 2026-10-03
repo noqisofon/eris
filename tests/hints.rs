@@ -108,3 +108,12 @@ fn implicit_access_hint_among_equally_close_names_is_deterministic() {
     assert_eq!(hints.len(), 1, "got different hints: {:?}", hints);
     assert!(hints.iter().next().unwrap().contains("'print'"), "{:?}", hints);
 }
+
+#[test]
+fn the_note_for_a_missing_builtin_argument_names_the_argument_that_works() {
+    // The name that is actually injected is `builtin`, not `builtins`.
+    let (code, err) = run("{} -> builtins.import \"fmt\"");
+    assert_eq!(code, Some(1));
+    assert!(err.contains("`{ builtin } ->`"), "stderr: {}", err);
+    assert!(!err.contains("`{ builtins } ->`"), "stderr: {}", err);
+}

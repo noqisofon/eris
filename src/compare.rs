@@ -4,6 +4,8 @@
 use crate::eval::{check_data_depth, evaluate};
 use crate::value::{Thunk, Value};
 use std::cmp::Ordering;
+use std::collections::HashSet;
+use std::rc::Rc;
 
 /// The result of `==`.
 pub enum Equality {
@@ -68,9 +70,11 @@ pub fn compare_order(a: &Value, b: &Value) -> Result<Option<Ordering>, ()> {
 /// equal. A function anywhere in the comparison is an error.
 ///
 /// The walk uses its own work stack, so a deeply nested value cannot overflow the
-/// native stack, and a value that contains itself ends in the same "nested too
-/// deeply" error as everything else that walks a value's shape instead of looping
-/// forever.
+/// native stack, and a depth limit (the one every walk over a value's shape has)
+/// turns absurd nesting into an error. Each pair of elements is compared only once,
+/// so shared structure takes time linear in its size and a value that contains
+/// itself terminates: two cyclic values of the same shape are equal (`a = [1 a]`
+/// and `b = [1 b]`).
 pub fn values_equal(a: &Value, b: &Value) -> Result<Equality, String> {
     // Pairs of still-unevaluated values, with how deep in the data they are.
     let mut stack: Vec<(Thunk, Thunk, usize)> = vec![(
@@ -78,7 +82,23 @@ pub fn values_equal(a: &Value, b: &Value) -> Result<Equality, String> {
         Thunk::evaluated(b.clone()),
         0,
     )];
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    let mut keep_alive: Vec<(Thunk, Thunk)> = Vec::new();
     while let Some((tx, ty, depth)) = stack.pop() {
+        // Compare each pair of elements once. A value reused many times (`[ l l ]`
+        // nested a few dozen levels) would otherwise be walked as a tree, which is
+        // exponential, and a value that contains itself would never finish. A pair
+        // met again is either already known equal or still being compared, and a
+        // difference found there ends the whole comparison anyway, so skipping it
+        // is safe. The first visit evaluates normally, so a NaN is still unequal,
+        // a function is still an error, and a failing element still fails.
+        let key = (Rc::as_ptr(&tx.0) as usize, Rc::as_ptr(&ty.0) as usize);
+        if !seen.insert(key) {
+            continue;
+        }
+        // Keep both alive, so that neither address can be reused by a new thunk
+        // while it is in `seen`.
+        keep_alive.push((tx.clone(), ty.clone()));
         check_data_depth(depth)?;
         let x = evaluate(tx)?;
         let y = evaluate(ty)?;
