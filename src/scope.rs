@@ -24,6 +24,16 @@ struct Checker {
     errors: Vec<ScopeError>,
 }
 
+/// One step of the walk. The walk keeps its own stack of these instead of
+/// recursing, so an expression nested a million levels deep (a long chain of
+/// `+`, say) cannot overflow the native stack.
+enum Task<'a> {
+    Visit(&'a Expr),
+    /// Leave the innermost scope; queued before the scope's contents so that it
+    /// runs after them.
+    PopScope,
+}
+
 impl Checker {
     fn is_bound(&self, name: &str) -> bool {
         self.scopes.iter().any(|s| s.iter().any(|n| n == name))
@@ -46,13 +56,27 @@ impl Checker {
         names
     }
 
-    fn scoped<F: FnOnce(&mut Self)>(&mut self, names: Vec<String>, f: F) {
-        self.scopes.push(names);
-        f(self);
-        self.scopes.pop();
+    /// Walks everything under `root`, with `scopes` already in place.
+    fn run<'a>(&mut self, root: &'a Expr) {
+        let mut stack = vec![Task::Visit(root)];
+        while let Some(task) = stack.pop() {
+            match task {
+                Task::PopScope => {
+                    self.scopes.pop();
+                }
+                Task::Visit(expr) => self.visit(expr, &mut stack),
+            }
+        }
     }
 
-    fn walk(&mut self, expr: &Expr) {
+    /// Enters a scope that lasts until everything queued after this call has
+    /// been visited.
+    fn enter<'a>(&mut self, names: Vec<String>, stack: &mut Vec<Task<'a>>) {
+        self.scopes.push(names);
+        stack.push(Task::PopScope);
+    }
+
+    fn visit<'a>(&mut self, expr: &'a Expr, stack: &mut Vec<Task<'a>>) {
         match &expr.kind {
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Path(_) => {}
             // `.name` reads an attribute of the `with` object; it is not a variable.
@@ -60,20 +84,18 @@ impl Checker {
             ExprKind::String(parts) => {
                 for part in parts {
                     if let StringPart::Interpolation(inner) = part {
-                        self.walk(inner);
+                        stack.push(Task::Visit(inner));
                     }
                 }
             }
-            ExprKind::List(items) => items.iter().for_each(|e| self.walk(e)),
+            ExprKind::List(items) => stack.extend(items.iter().map(Task::Visit)),
             ExprKind::AttrSet { is_rec, attrs } => {
                 if *is_rec {
                     // Every key is visible from every value.
-                    let keys = attrs.iter().map(|(k, _)| k.clone()).collect();
-                    self.scoped(keys, |c| attrs.iter().for_each(|(_, v)| c.walk(v)));
-                } else {
-                    // A plain attrset's values do not see their siblings.
-                    attrs.iter().for_each(|(_, v)| self.walk(v));
+                    self.enter(attrs.iter().map(|(k, _)| k.clone()).collect(), stack);
                 }
+                // A plain attrset's values do not see their siblings.
+                stack.extend(attrs.iter().map(|(_, v)| Task::Visit(v)));
             }
             ExprKind::Ident(name) => {
                 if !self.is_bound(name) {
@@ -86,39 +108,40 @@ impl Checker {
                     });
                 }
             }
-            ExprKind::FieldAccess(lhs, _) => self.walk(lhs),
+            ExprKind::FieldAccess(lhs, _) => stack.push(Task::Visit(lhs)),
             ExprKind::Lambda(args, body) => {
                 let names = match args {
                     Args::Positional(names) => names.clone(),
                     Args::Destructure { names, .. } => names.clone(),
                 };
-                self.scoped(names, |c| c.walk(body));
+                self.enter(names, stack);
+                stack.push(Task::Visit(body));
             }
             ExprKind::App(f, arg) => {
-                self.walk(f);
-                self.walk(arg);
+                stack.push(Task::Visit(f));
+                stack.push(Task::Visit(arg));
             }
             ExprKind::LetIn(bindings, body) => {
                 // `let` is recursive: every binding is visible from every binding.
-                let names = bindings.iter().map(|(k, _)| k.clone()).collect();
-                self.scoped(names, |c| {
-                    bindings.iter().for_each(|(_, v)| c.walk(v));
-                    c.walk(body);
-                });
+                self.enter(bindings.iter().map(|(k, _)| k.clone()).collect(), stack);
+                stack.extend(bindings.iter().map(|(_, v)| Task::Visit(v)));
+                stack.push(Task::Visit(body));
             }
             ExprKind::BinOp(lhs, _, rhs) => {
-                self.walk(lhs);
-                self.walk(rhs);
+                stack.push(Task::Visit(lhs));
+                stack.push(Task::Visit(rhs));
             }
-            ExprKind::Neg(inner) | ExprKind::TypeAnnotation(inner, _) => self.walk(inner),
+            ExprKind::Neg(inner) | ExprKind::TypeAnnotation(inner, _) => {
+                stack.push(Task::Visit(inner))
+            }
             ExprKind::With(obj, body) => {
-                self.walk(obj);
-                self.walk(body);
+                stack.push(Task::Visit(obj));
+                stack.push(Task::Visit(body));
             }
             ExprKind::IfElse(cond, then_branch, else_branch) => {
-                self.walk(cond);
-                self.walk(then_branch);
-                self.walk(else_branch);
+                stack.push(Task::Visit(cond));
+                stack.push(Task::Visit(then_branch));
+                stack.push(Task::Visit(else_branch));
             }
         }
     }
@@ -147,9 +170,11 @@ pub fn check(root: &Expr) -> Vec<ScopeError> {
                     .collect(),
                 Args::Positional(_) => Vec::new(),
             };
-            checker.scoped(provided, |c| c.walk(body));
+            checker.scopes.push(provided);
+            checker.run(body);
+            checker.scopes.pop();
         }
-        _ => checker.walk(root),
+        _ => checker.run(root),
     }
     let mut errors = checker.errors;
     errors.sort_by_key(|e| e.span.start);

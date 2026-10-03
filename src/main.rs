@@ -613,6 +613,74 @@ mod tests {
         assert!(!thunk.is_unevaluated());
     }
 
+    /// `leaf + 1 + 1 + ... + 1`, `depth` levels deep, built without recursion.
+    fn deep_left_chain(depth: usize, leaf: crate::ast::Expr) -> crate::ast::Expr {
+        use crate::ast::{Expr, ExprKind, Op};
+        let one = || Expr { kind: ExprKind::Int(1), span: 0..0 };
+        let mut e = leaf;
+        for _ in 0..depth {
+            e = Expr {
+                kind: ExprKind::BinOp(Box::new(e), Op::Add, Box::new(one())),
+                span: 0..0,
+            };
+        }
+        e
+    }
+
+    #[test]
+    fn test_scope_check_does_not_recurse_over_deep_expressions() {
+        use crate::ast::{Expr, ExprKind};
+        let unbound = Expr { kind: ExprKind::Ident("nope".to_string()), span: 5..9 };
+        let ast = deep_left_chain(300_000, unbound);
+
+        // 256KB of stack holds only a couple of thousand recursive frames, so this
+        // only works if the walk keeps its own stack.
+        let found = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn_scoped(s, || {
+                    crate::scope::check(&ast)
+                        .into_iter()
+                        .map(|e| e.name)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        assert_eq!(found, ["nope"]);
+
+        // Dropping an expression this deep recurses, so do it on a big stack.
+        std::thread::Builder::new()
+            .stack_size(INTERPRETER_STACK_SIZE)
+            .spawn(move || drop(ast))
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_scope_check_accepts_a_deep_chain_with_nothing_unbound() {
+        use crate::ast::{Expr, ExprKind};
+        let leaf = Expr { kind: ExprKind::Int(1), span: 0..1 };
+        let ast = deep_left_chain(300_000, leaf);
+        let n = std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn_scoped(s, || crate::scope::check(&ast).len())
+                .unwrap()
+                .join()
+                .unwrap()
+        });
+        assert_eq!(n, 0);
+        std::thread::Builder::new()
+            .stack_size(INTERPRETER_STACK_SIZE)
+            .spawn(move || drop(ast))
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     #[test]
     fn test_if_else() {
         assert_eq!(eval_code("if true then 1 else 2"), "1");
