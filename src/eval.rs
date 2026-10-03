@@ -757,13 +757,18 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
                         _ => ord != Cmp::Less,
                     })),
                     Err(()) => {
+                        let (lt, rt) = (value_type_name(&left), value_type_name(&right));
+                        let what = if lt == rt {
+                            format!("two {} values", lt)
+                        } else {
+                            format!("{} and {}", with_article(lt), with_article(rt))
+                        };
                         report_error(
                             env,
                             expr.span.clone(),
                             &format!(
-                                "Cannot order {} and {} (only numbers and strings can be ordered)",
-                                with_article(value_type_name(&left)),
-                                with_article(value_type_name(&right))
+                                "Cannot order {} (only numbers and strings can be ordered)",
+                                what
                             ),
                             None,
                             None,
