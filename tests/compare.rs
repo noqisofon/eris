@@ -288,10 +288,60 @@ fn absurdly_nested_lists_end_in_the_nesting_limit_error_not_a_crash() {
 }
 
 #[test]
-fn a_value_containing_itself_ends_in_the_nesting_limit_error_not_a_hang() {
-    assert_error("let s = [ 1 s ]; in s == s", "nested too deeply");
+fn a_value_compared_with_itself_is_equal_even_if_it_contains_itself() {
+    // The same element on both sides is equal without looking inside, so a cyclic
+    // value compared with itself neither hangs nor errors.
+    assert_all(&[
+        ("let s = [ 1 s ]; in s == s", "true"),
+        ("let s = { x = s; }; in s == s", "true"),
+        ("let s = [ 1 s ]; in s != s", "false"),
+    ]);
+}
+
+#[test]
+fn two_different_cyclic_values_end_in_the_nesting_limit_error_not_a_hang() {
+    // Nothing is shared between these, so the walk really would go on forever.
     assert_error("let a = [ 1 a ]; b = [ 1 b ]; in a == b", "nested too deeply");
-    assert_error("let s = { x = s; }; in s == s", "nested too deeply");
+    assert_error("let a = { x = a; }; b = { x = b; }; in a == b", "nested too deeply");
+}
+
+#[test]
+fn a_cyclic_value_differing_early_is_decided_before_the_cycle_is_reached() {
+    assert_all(&[("let s = [ 1 s ]; t = [ 2 t ]; in s == t", "false")]);
+}
+
+#[test]
+fn heavily_shared_structures_compare_quickly() {
+    // Each level refers to the level below it twice, so walking it as a tree
+    // takes 2^40 steps; being shared, comparing it with itself takes none.
+    let mut bindings = String::from("l0 = [ 1 ]; ");
+    for i in 1..=40 {
+        bindings.push_str(&format!("l{} = [ l{} l{} ]; ", i, i - 1, i - 1));
+    }
+    assert_all(&[
+        (&format!("let {} in l40 == l40", bindings), "true"),
+        (&format!("let {} in l40 != l40", bindings), "false"),
+    ]);
+}
+
+#[test]
+fn a_shared_element_is_equal_to_itself_even_if_it_is_nan_or_broken() {
+    // A consequence of the identity shortcut: it applies to elements, so a list
+    // holding the very same NaN (or the very same unevaluated failure) on both
+    // sides is equal. `nan == nan` and two separately written `[ nan ]`s are not.
+    assert_all(&[
+        ("let l = [ nan ]; in l == l", "true"),
+        ("[ nan ] == [ nan ]", "false"),
+        ("nan == nan", "false"),
+        ("let e = [ nope ]; in [ e 1 ] == [ e 1 ]", "true"),
+    ]);
+}
+
+#[test]
+fn distinct_elements_that_fail_still_poison_the_comparison() {
+    let o = eval("[ nope ] == [ nope ]");
+    assert_eq!(o.code, Some(1));
+    assert!(o.stderr.contains("Variable 'nope' not found"), "stderr: {}", o.stderr);
 }
 
 #[test]

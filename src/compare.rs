@@ -4,6 +4,7 @@
 use crate::eval::{check_data_depth, evaluate};
 use crate::value::{Thunk, Value};
 use std::cmp::Ordering;
+use std::rc::Rc;
 
 /// The result of `==`.
 pub enum Equality {
@@ -68,9 +69,10 @@ pub fn compare_order(a: &Value, b: &Value) -> Result<Option<Ordering>, ()> {
 /// equal. A function anywhere in the comparison is an error.
 ///
 /// The walk uses its own work stack, so a deeply nested value cannot overflow the
-/// native stack, and a value that contains itself ends in the same "nested too
-/// deeply" error as everything else that walks a value's shape instead of looping
-/// forever.
+/// native stack. Two *different* values that each contain themselves (`a = [1 a]`
+/// against `b = [1 b]`) would never finish, so they end in the same "nested too
+/// deeply" error as everything else that walks a value's shape. The *same* element
+/// on both sides is taken to be equal without looking inside (see below).
 pub fn values_equal(a: &Value, b: &Value) -> Result<Equality, String> {
     // Pairs of still-unevaluated values, with how deep in the data they are.
     let mut stack: Vec<(Thunk, Thunk, usize)> = vec![(
@@ -79,6 +81,17 @@ pub fn values_equal(a: &Value, b: &Value) -> Result<Equality, String> {
         0,
     )];
     while let Some((tx, ty, depth)) = stack.pop() {
+        // The very same element on both sides (a value shared between two data
+        // structures, or a structure compared with itself) is equal to itself:
+        // there is nothing to look at. This is what keeps a comparison from
+        // blowing up when a value is reused many times (`[ l l ]` nested a few
+        // dozen levels), and from chasing a cycle forever when both sides are
+        // the same cyclic value. Like a pointer-identity shortcut anywhere, it
+        // also means a list holding a NaN is equal to itself, and an element that
+        // would fail to evaluate is never evaluated.
+        if Rc::ptr_eq(&tx.0, &ty.0) {
+            continue;
+        }
         check_data_depth(depth)?;
         let x = evaluate(tx)?;
         let y = evaluate(ty)?;

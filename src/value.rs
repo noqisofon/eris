@@ -36,8 +36,11 @@ impl fmt::Debug for Value {
             }
             Value::AttrSet(attrs) => {
                 write!(f, "{{ ")?;
-                for (k, v) in attrs {
-                    write!(f, "{} = {:?}; ", k, v)?;
+                // HashMap order changes from run to run; print in key order.
+                let mut keys: Vec<&String> = attrs.keys().collect();
+                keys.sort();
+                for k in keys {
+                    write!(f, "{} = {:?}; ", k, attrs[k])?;
                 }
                 write!(f, "}}")
             }

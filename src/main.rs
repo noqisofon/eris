@@ -683,6 +683,26 @@ mod tests {
     }
 
     #[test]
+    fn test_attrset_debug_output_is_in_key_order() {
+        // Every HashMap gets its own random hasher state, so building the same set
+        // many times shows any dependence on iteration order.
+        let rendered: std::collections::BTreeSet<String> = (0..50)
+            .map(|_| {
+                let mut m = std::collections::HashMap::new();
+                for (i, k) in ["z", "a", "m", "k", "b", "q"].iter().enumerate() {
+                    m.insert(k.to_string(), Thunk::evaluated(Value::Int(i as i64)));
+                }
+                format!("{:?}", Value::AttrSet(m))
+            })
+            .collect();
+        assert_eq!(rendered.len(), 1, "got different renderings: {:?}", rendered);
+        assert_eq!(
+            rendered.iter().next().unwrap(),
+            "{ a = 1; b = 4; k = 3; m = 2; q = 5; z = 0; }"
+        );
+    }
+
+    #[test]
     fn test_if_else() {
         assert_eq!(eval_code("if true then 1 else 2"), "1");
         assert_eq!(eval_code("if false then 1 else 2"), "2");

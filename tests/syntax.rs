@@ -358,3 +358,18 @@ fn malformed_with_is_a_syntax_error() {
         assert_eq!(o.code, Some(1), "`{}` should not parse", expr);
     }
 }
+
+// ---- display of attribute sets ---------------------------------------------
+
+#[test]
+fn printing_an_attrset_lists_its_keys_in_order_every_time() {
+    let source = "{ builtin } -> let p = (builtin.import \"fmt\").println; in \
+                  [ (p { z = 1; a = 2; m = 3; k = 4; b = 5; }) ]";
+    let outputs: std::collections::BTreeSet<String> =
+        (0..8).map(|_| run_script(source).stdout).collect();
+    assert_eq!(outputs.len(), 1, "got different outputs: {:?}", outputs);
+    assert_eq!(
+        outputs.iter().next().unwrap(),
+        "{ a = <thunk>; b = <thunk>; k = <thunk>; m = <thunk>; z = <thunk>; }\n"
+    );
+}

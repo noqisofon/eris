@@ -507,7 +507,7 @@ fn eval_expr_inner(expr: &Expr, env: &Env) -> Result<Value, String> {
                 let candidates = env.visible_names();
                 let hint = did_you_mean(name, candidates.iter());
                 let note = if name == "builtins" {
-                    Some("consider receiving 'builtins' as a function argument, e.g., `{ builtins } ->`")
+                    Some("consider receiving 'builtin' as a function argument, e.g., `{ builtin } ->`")
                 } else {
                     None
                 };
