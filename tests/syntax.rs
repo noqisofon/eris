@@ -265,3 +265,96 @@ fn malformed_interpolations_are_syntax_errors() {
         assert!(o.stderr.contains("Error"), "stderr: {}", o.stderr);
     }
 }
+
+// ---- `with obj; body` -----------------------------------------------------
+
+/// Evaluates `expr` with `o = { a = 1; b = 2; }`, `f = |n| -> { v = n; }` and
+/// `l` = the list module in scope; returns what `println` printed.
+fn with_printed(expr: &str) -> Outcome {
+    run_script(&format!(
+        "{{ builtin }} -> let p = (builtin.import \"fmt\").println; o = {{ a = 1; b = 2; }}; \
+         f = |n| -> {{ v = n; }}; l = builtin.import \"list\"; in [ (p ({})) ]",
+        expr
+    ))
+}
+
+fn with_ok(expr: &str) -> String {
+    let o = with_printed(expr);
+    assert_eq!(o.code, Some(0), "`{}` failed: {}", expr, o.stderr);
+    o.stdout
+}
+
+#[test]
+fn the_older_with_form_is_unchanged() {
+    assert_eq!(with_ok("with o .a"), "1\n");
+    assert_eq!(with_ok("with o .a + .b"), "3\n");
+    assert_eq!(with_ok("with { x = 5; } .x"), "5\n");
+    // The scope object may itself be an application.
+    assert_eq!(with_ok("with f 3 .v"), "3\n");
+    assert_eq!(with_ok("with (f 3) .v"), "3\n");
+}
+
+#[test]
+fn semicolon_form_takes_the_same_bodies_as_the_older_form() {
+    assert_eq!(with_ok("with o; .a"), "1\n");
+    assert_eq!(with_ok("with o; .a + .b"), "3\n");
+    assert_eq!(with_ok("with { x = 5; }; .x"), "5\n");
+    assert_eq!(with_ok("with f 3; .v"), "3\n");
+}
+
+#[test]
+fn semicolon_form_allows_a_body_that_does_not_start_with_a_dot() {
+    // These all failed to parse in the older form, because the scope object
+    // swallowed the body as a function argument.
+    assert_eq!(with_ok("with o; (.a + .b) * 2"), "6\n");
+    assert_eq!(with_ok("with o; if .a > 0 then .b else 0"), "2\n");
+    assert_eq!(with_ok("with o; let z = 10; in z + .a"), "11\n");
+    assert_eq!(with_ok("with o; \"text\""), "text\n");
+    assert_eq!(with_ok("with o; 7"), "7\n");
+    assert_eq!(
+        with_ok("with o; l.foldl (|a, e| -> a + e) 0 [ (.a) (.b) ]"),
+        "3\n"
+    );
+}
+
+#[test]
+fn the_older_form_still_cannot_take_such_bodies() {
+    for body in ["with o (1 + 2)", "with o 7", "with o if true then 1 else 2"] {
+        let o = with_printed(body);
+        assert_eq!(o.code, Some(1), "`{}` should not parse", body);
+    }
+}
+
+#[test]
+fn both_forms_can_be_mixed_without_ambiguity() {
+    let o = run_script(
+        "{ builtin } -> let p = (builtin.import \"fmt\").println; o = { a = 1; b = 2; }; \
+         old-in-let = with o .a; new-in-let = with o; .b; \
+         both = (with o .a) + (with o; .b); \
+         attrs = { x = with o .a; y = with o; .b; z = with o; (.a + .b); }; \
+         in [ (p old-in-let) (p new-in-let) (p both) (p attrs.x) (p attrs.y) (p attrs.z) ]",
+    );
+    assert_eq!(o.code, Some(0), "stderr: {}", o.stderr);
+    assert_eq!(o.stdout, "1\n2\n3\n1\n2\n3\n");
+}
+
+#[test]
+fn nested_with_uses_the_innermost_scope_object() {
+    assert_eq!(with_ok("with { k = 5; }; with { k = 9; }; .k"), "9\n");
+}
+
+#[test]
+fn bare_identifiers_do_not_see_the_with_scope() {
+    // `with` only provides `.name` access; plain `a` is an ordinary variable.
+    let o = with_printed("with o; a");
+    assert_eq!(o.code, Some(1));
+    assert!(o.stderr.contains("Variable 'a' not found"), "stderr: {}", o.stderr);
+}
+
+#[test]
+fn malformed_with_is_a_syntax_error() {
+    for expr in ["with o;", "with ; .a", "with"] {
+        let o = with_printed(expr);
+        assert_eq!(o.code, Some(1), "`{}` should not parse", expr);
+    }
+}
