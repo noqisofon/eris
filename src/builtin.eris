@@ -1,5 +1,5 @@
 # builtin.eris
 { __native } -> rec {
-  abort = |exit_code| -> __native.abort exit_code;
+  abort = |exit_code_or_message| -> __native.abort exit_code_or_message;
   import = |module_name| -> __native.import module_name;
 }

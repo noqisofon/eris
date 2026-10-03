@@ -254,11 +254,21 @@ pub fn build_native_env() -> Value {
             if crate::eval::is_lenient() {
                 return Ok(Value::Poison);
             }
-            let code = match v {
-                Value::Int(i) => i as i32,
-                _ => 1,
-            };
-            std::process::exit(code);
+            match v {
+                // `abort 3` ends the process with exit code 3.
+                Value::Int(code) => std::process::exit(code as i32),
+                // `abort "message"` reports the message and ends with exit code 1.
+                Value::String(message) => {
+                    eprintln!("abort: {}", message);
+                    std::process::exit(1);
+                }
+                // Anything else used to exit 1 without a word, which is the hardest
+                // kind of failure to track down.
+                other => Err(format!(
+                    "abort expects an exit code (int) or a message (string), got {:?}",
+                    other
+                )),
+            }
         })),
     );
 
